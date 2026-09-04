@@ -77,7 +77,7 @@ export default function App() {
     return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
   };
 
-  const handleAuth = async (e) => {
+  /*const handleAuth = async (e) => {
     e.preventDefault();
     setLoading(true);
 
@@ -106,8 +106,53 @@ export default function App() {
     } finally {
       setLoading(false);
     }
+  };*/
+  /* actualizacion para logueo */
+  const handleAuth = async (e) => {
+    e.preventDefault();
+    setLoading(true);
+
+    try {
+      if (isRegistering) {
+        // 1. Registro enviando los datos de perfil directamente en data/meta_data
+        const { data: authData, error: authError } = await supabase.auth.signUp({ 
+          email, 
+          password,
+          options: {
+            data: {
+              full_name: fullName,
+              role: role
+            }
+          }
+        });
+
+        if (authError) throw authError;
+
+        if (authData.user) {
+          // 2. Insertar o actualizar el perfil de usuario
+          await supabase.from('profiles').upsert({
+            id: authData.user.id,
+            full_name: fullName,
+            email: email,
+            role: role
+          });
+
+          alert('¡Cuenta creada e integrada con éxito! Ya puedes iniciar sesión.');
+          setIsRegistering(false);
+        }
+      } else {
+        // Iniciar Sesión Directo
+        const { error } = await supabase.auth.signInWithPassword({ email, password });
+        if (error) throw error;
+      }
+    } catch (err) {
+      alert('Aviso de Autenticación: ' + err.message);
+    } finally {
+      setLoading(false);
+    }
   };
 
+  /*------------------------------------------- */
   const handleLogout = () => {
     supabase.auth.signOut();
   };
