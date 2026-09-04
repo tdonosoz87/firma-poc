@@ -8,7 +8,7 @@ export default function App() {
   const [selectedFile, setSelectedFile] = useState(null);
   const [loading, setLoading] = useState(false);
   
-  // Guardamos proporciones relativas (0% a 100%)
+  // Posición porcentual (0.0 a 1.0)
   const [normalizedCoords, setNormalizedCoords] = useState(null); // { percentX, percentY }
   const [clickPos, setClickPos] = useState(null); // { x, y } para la marca roja visual
 
@@ -38,7 +38,7 @@ export default function App() {
     return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
   };
 
-  // Capturar clic exacto sobre la vista previa
+  // Capturar clic sobre la vista previa
   const handlePreviewClick = (e) => {
     if (!previewRef.current) return;
     
@@ -46,7 +46,7 @@ export default function App() {
     const clickX = e.clientX - rect.left;
     const clickY = e.clientY - rect.top;
 
-    // Posición porcentual en la ventana
+    // Posición porcentual dentro del contenedor visual
     const percentX = clickX / rect.width;
     const percentY = clickY / rect.height;
 
@@ -95,7 +95,7 @@ export default function App() {
     }
   };
 
-  // Estampar Firma Digital en las Coordenadas Elegidas
+  // Estampar Firma Digital en la Coordenada Exacta
   const handleSignDocument = async (doc) => {
     if (!normalizedCoords) {
       alert('Por favor haz clic sobre la vista previa para seleccionar la posición.');
@@ -120,14 +120,12 @@ export default function App() {
       const pdfDoc = await PDFDocument.load(existingPdfBytes);
       const firstPage = pdfDoc.getPages()[0];
       
-      // Obtener tamaño real del PDF
+      // Obtener tamaño real del PDF cargado
       const { width: pdfWidth, height: pdfHeight } = firstPage.getSize();
 
-      // Compensación de altura del bloque de texto (45pt) para alinear la parte superior del sello al clic
-      const textBlockHeight = 45; 
-
+      // Conversión porcentual a puntos de PDF con compensación vertical fina (+20pt)
       const targetX = normalizedCoords.percentX * pdfWidth;
-      const targetY = pdfHeight - (normalizedCoords.percentY * pdfHeight) - textBlockHeight;
+      const targetY = pdfHeight - (normalizedCoords.percentY * pdfHeight) + 20;
 
       const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
 
@@ -167,7 +165,7 @@ export default function App() {
         .update({ status: 'APPROVED', file_path: finalUrlData.publicUrl })
         .eq('id', doc.id);
 
-      alert('¡Documento firmado en la ubicación seleccionada!');
+      alert('¡Documento firmado en el punto exacto!');
       setSelectedDoc(null);
       setNormalizedCoords(null);
       setClickPos(null);
@@ -182,7 +180,7 @@ export default function App() {
   return (
     <div style={{ fontFamily: 'Arial, sans-serif', padding: '30px', maxWidth: '800px', margin: '0 auto' }}>
       <h2>Módulo de Firma Digital Adaptativa ISO</h2>
-      <p style={{ color: '#666' }}>Ajuste automático de coordenadas y proporción visual 1:1.</p>
+      <p style={{ color: '#666' }}>Posicionamiento exacto sobre la línea con Hash SHA-256.</p>
 
       <hr style={{ margin: '20px 0' }} />
 
@@ -243,11 +241,11 @@ export default function App() {
         </table>
       </section>
 
-      {/* MODAL CON RELACIÓN DE ASPECTO EXACTA */}
+      {/* MODAL CON PROPORCIÓN DE ASPECTO PUNTUAL */}
       {selectedDoc && (
         <div style={{ position: 'fixed', top: 0, left: 0, width: '100%', height: '100%', background: 'rgba(0,0,0,0.6)', display: 'flex', justifyContent: 'center', alignItems: 'center' }}>
           <div style={{ background: '#fff', padding: '20px', borderRadius: '8px', width: '420px' }}>
-            <h3>Haz clic en el recuadro exacto para estampar</h3>
+            <h3>Haz clic en la caja exacta para estampar</h3>
             
             <div 
               ref={previewRef}
@@ -255,7 +253,7 @@ export default function App() {
               style={{ 
                 position: 'relative', 
                 width: '100%', 
-                aspectRatio: '1 / 1.294', // Relación de aspecto exactos Hoja Carta
+                aspectRatio: '1 / 1.294', 
                 border: '2px dashed #0070f3', 
                 cursor: 'crosshair', 
                 overflow: 'hidden' 
