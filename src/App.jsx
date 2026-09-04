@@ -123,8 +123,8 @@ export default function App() {
 
       // Formato ultracompacto en 3 líneas
       const stamp = `
-      [ FIRMA DIGITAL ISO 27001 ]
-      Firmante: Supervisor SGSI (supervisor@empresa.cl)
+      [ FIRMA DIGITAL ]
+      Firmante: Supervisor SGSI (tdonoso@zenware.cl)
       Fecha: ${new Date().toISOString().split('T')[0]} | IP: ${ip} | HASH: ${shortHash}
       `;
 
