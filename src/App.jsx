@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { supabase } from './supabaseClient';
+import { supabase } from './supabaseClient'; // Importa las credenciales desde supabaseClient.js
 import { PDFDocument, rgb, StandardFonts } from 'pdf-lib';
 import { FileCheck, Upload, CheckCircle2, Clock, Eye, FileText } from 'lucide-react';
 
@@ -9,20 +9,29 @@ export default function App() {
   const [selectedFile, setSelectedFile] = useState(null);
   const [loading, setLoading] = useState(false);
 
-  // Cargar lista de documentos desde Supabase
+  // Consultar lista de documentos guardados en Supabase
   const fetchDocuments = async () => {
-    const { data, error } = await supabase
-      .from('document_tests')
-      .select('*')
-      .order('id', { ascending: false });
-    if (!error) setDocuments(data || []);
+    try {
+      const { data, error } = await supabase
+        .from('document_tests')
+        .select('*')
+        .order('id', { ascending: false });
+      
+      if (error) {
+        console.error('Error consultando Supabase:', error.message);
+      } else {
+        setDocuments(data || []);
+      }
+    } catch (err) {
+      console.error('Error de conexión:', err);
+    }
   };
 
   useEffect(() => {
     fetchDocuments();
   }, []);
 
-  // 1. Subir cualquier archivo PDF adjunto por el usuario
+  // 1. Cargar cualquier archivo PDF local a Supabase Storage
   const handleFileUpload = async (e) => {
     e.preventDefault();
     if (!selectedFile) {
@@ -33,7 +42,6 @@ export default function App() {
     setLoading(true);
 
     try {
-      // Crear un nombre único de archivo para evitar colisiones en Supabase
       const cleanFileName = selectedFile.name.replace(/[^a-zA-Z0-9.]/g, '_');
       const fileExt = cleanFileName.split('.').pop();
       
@@ -45,7 +53,7 @@ export default function App() {
 
       const fileName = `${Date.now()}_${cleanFileName}`;
 
-      // Subir archivo al bucket 'documentos_prueba' en Supabase Storage
+      // Subir archivo al bucket 'documentos_prueba'
       const { data: uploadData, error: uploadError } = await supabase.storage
         .from('documentos_prueba')
         .upload(fileName, selectedFile, {
@@ -54,15 +62,15 @@ export default function App() {
         });
 
       if (uploadError) {
-        throw new Error('Error subiendo archivo: ' + uploadError.message);
+        throw new Error('Error en Storage: ' + uploadError.message);
       }
 
-      // Obtener la URL pública del archivo subido
+      // Obtener URL Pública del archivo
       const { data: publicUrlData } = supabase.storage
         .from('documentos_prueba')
         .getPublicUrl(fileName);
 
-      // Guardar el registro en la base de datos
+      // Registrar en la base de datos
       const { error: dbError } = await supabase
         .from('document_tests')
         .insert({
@@ -75,7 +83,6 @@ export default function App() {
 
       alert('¡Archivo subido con éxito!');
       setSelectedFile(null);
-      // Limpiar input file del DOM
       e.target.reset();
       fetchDocuments();
     } catch (err) {
@@ -89,14 +96,13 @@ export default function App() {
   const handleSignDocument = async (doc) => {
     setLoading(true);
     try {
-      // Obtener IP pública del firmante para trazabilidad ISO
       let ip = '127.0.0.1';
       try {
         const ipRes = await fetch('https://api.ipify.org?format=json');
         const ipData = await ipRes.json();
         ip = ipData.ip;
       } catch (e) {
-        console.warn('No se pudo obtener IP pública, usando local.');
+        console.warn('No se pudo obtener IP pública, usando IP por defecto.');
       }
 
       // Descargar el PDF original cargado
@@ -131,7 +137,7 @@ export default function App() {
       const signedPdfBytes = await pdfDoc.save();
       const signedFileName = `SIGNED_${Date.now()}.pdf`;
 
-      // Subir el archivo firmado al mismo bucket 'documentos_prueba'
+      // Subir el archivo firmado al bucket 'documentos_prueba'
       const { error: uploadError } = await supabase.storage
         .from('documentos_prueba')
         .upload(signedFileName, signedPdfBytes, { contentType: 'application/pdf' });
