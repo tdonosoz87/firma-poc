@@ -115,11 +115,13 @@ export default function App() {
       
       const { width: pdfWidth, height: pdfHeight } = firstPage.getSize();
 
+      // Ajustamos targetY para compensar la altura del bloque compacto (3 líneas = ~21pt)
       const targetX = normalizedCoords.percentX * pdfWidth;
       const targetY = pdfHeight - (normalizedCoords.percentY * pdfHeight) + 10;
 
       const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
 
+      // Formato ultracompacto en 3 líneas
       const stamp = `
       [ FIRMA DIGITAL ISO 27001 ]
       Firmante: Supervisor SGSI (supervisor@empresa.cl)
