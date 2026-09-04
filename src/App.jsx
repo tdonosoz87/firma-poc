@@ -26,6 +26,13 @@ export default function App() {
     fetchDocuments();
   }, []);
 
+  // Función utilitaria para calcular Hash SHA-256
+  const generateSHA256 = async (arrayBuffer) => {
+    const hashBuffer = await crypto.subtle.digest('SHA-256', arrayBuffer);
+    const hashArray = Array.from(new Uint8Array(hashBuffer));
+    return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+  };
+
   // 1. Subir archivo PDF
   const handleFileUpload = async (e) => {
     e.preventDefault();
@@ -40,19 +47,16 @@ export default function App() {
       const cleanName = selectedFile.name.replace(/[^a-zA-Z0-9.]/g, '_');
       const fileName = `${Date.now()}_${cleanName}`;
 
-      // Subir archivo a Supabase Storage
       const { error: uploadError } = await supabase.storage
         .from('documentos_prueba')
         .upload(fileName, selectedFile);
 
       if (uploadError) throw new Error('Error en Storage: ' + uploadError.message);
 
-      // Obtener URL Pública
       const { data: publicUrlData } = supabase.storage
         .from('documentos_prueba')
         .getPublicUrl(fileName);
 
-      // Insertar registro en BD
       const { error: dbError } = await supabase
         .from('document_tests')
         .insert({
@@ -74,7 +78,7 @@ export default function App() {
     }
   };
 
-  // 2. Estampar Firma Digital
+  // 2. Estampar Firma Digital en Posición Específica (Caja 1)
   const handleSignDocument = async (doc) => {
     setLoading(true);
     try {
@@ -88,28 +92,34 @@ export default function App() {
       }
 
       const existingPdfBytes = await fetch(doc.file_path).then((res) => res.arrayBuffer());
-      const pdfDoc = await PDFDocument.load(existingPdfBytes);
+      
+      // Generar Hash de Integridad SHA-256
+      const sha256Hash = await generateSHA256(existingPdfBytes);
+      const shortHash = sha256Hash.substring(0, 16) + '...'; // Versión corta para el recuadro
 
+      const pdfDoc = await PDFDocument.load(existingPdfBytes);
       const pages = pdfDoc.getPages();
       const firstPage = pages[0];
       const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
 
+      // Bloque de Firma para posicionar sobre "Firma Prueba 1"
       const stamp = `
-      ======================================================
-      APROBADO DIGITALMENTE - AUDITORÍA ISO 27001
-      Firmante: Supervisor SGSI (supervisor@empresa.cl)
-      Fecha UTC: ${new Date().toISOString()}
-      IP Origen: ${ip}
-      ======================================================
+      DOCUMENTO APROBADO
+      Firmante: Encargado SGSI
+      Email: supervisor@empresa.cl
+      Fecha: ${new Date().toISOString().split('T')[0]}
+      IP: ${ip}
+      HASH: ${shortHash}
       `;
 
+      // Posicionar exactamente en la caja izquierda (X: 145, Y: 320)
       firstPage.drawText(stamp.trim(), {
-        x: 40,
-        y: 50,
-        size: 7,
+        x: 145,
+        y: 320,
+        size: 6.5,
         font,
         color: rgb(0, 0.2, 0.6),
-        lineHeight: 9,
+        lineHeight: 8,
       });
 
       const signedPdfBytes = await pdfDoc.save();
@@ -133,7 +143,7 @@ export default function App() {
         })
         .eq('id', doc.id);
 
-      alert('¡Documento Firmado y Aprobado!');
+      alert('¡Documento Firmado dentro de la Caja 1 con Hash SHA-256!');
       setSelectedDoc(null);
       fetchDocuments();
     } catch (err) {
@@ -146,7 +156,7 @@ export default function App() {
   return (
     <div style={{ fontFamily: 'Arial, sans-serif', padding: '30px', maxWidth: '800px', margin: '0 auto' }}>
       <h2>Módulo de Firma Digital & Seguimiento ISO</h2>
-      <p style={{ color: '#666' }}>Prueba de concepto conectada a Supabase</p>
+      <p style={{ color: '#666' }}>Prueba con Posicionamiento Preciso y Hash SHA-256</p>
 
       <hr style={{ margin: '20px 0' }} />
 
@@ -193,11 +203,11 @@ export default function App() {
                   <td>
                     {doc.status === 'PENDING' ? (
                       <button onClick={() => setSelectedDoc(doc)} style={{ padding: '4px 8px', background: '#22c55e', color: '#fff', border: 'none', borderRadius: '4px', cursor: 'pointer' }}>
-                        Firmar
+                        Firmar en Caja 1
                       </button>
                     ) : (
                       <a href={doc.file_path} target="_blank" rel="noreferrer" style={{ color: '#0070f3' }}>
-                        Ver Firmado
+                        Ver PDF Firmado
                       </a>
                     )}
                   </td>
@@ -218,7 +228,7 @@ export default function App() {
             <div style={{ marginTop: '15px', display: 'flex', justifyContent: 'flex-end', gap: '10px' }}>
               <button onClick={() => setSelectedDoc(null)}>Cancelar</button>
               <button onClick={() => handleSignDocument(selectedDoc)} disabled={loading} style={{ background: '#16a34a', color: '#fff', border: 'none', padding: '6px 12px', borderRadius: '4px' }}>
-                {loading ? 'Procesando...' : 'Estampar Firma'}
+                {loading ? 'Procesando...' : 'Estampar en Caja 1'}
               </button>
             </div>
           </div>
