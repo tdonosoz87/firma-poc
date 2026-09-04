@@ -1,149 +1,271 @@
 import React, { useState, useEffect } from 'react';
-import { createClient } from '@supabase/supabase-js';
+import { supabase } from './supabaseClient';
 import { PDFDocument, rgb, StandardFonts } from 'pdf-lib';
-
-// Inicializar Supabase (reemplaza con tus llaves)
-const SUPABASE_URL = 'https://vhogjsnhfyngezxmrocw.supabase.co';
-const SUPABASE_KEY = 'sb_publishable_lm-ueSEkHUFv_HbscqmvBg_UPhGhxZb';
-const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
+import { FileCheck, Upload, CheckCircle2, Clock, Eye, FileText } from 'lucide-react';
 
 export default function App() {
-  const [file, setFile] = useState(null);
   const [documents, setDocuments] = useState([]);
+  const [selectedDoc, setSelectedDoc] = useState(null);
+  const [selectedFile, setSelectedFile] = useState(null);
   const [loading, setLoading] = useState(false);
+
+  // Cargar lista de documentos desde Supabase
+  const fetchDocuments = async () => {
+    const { data, error } = await supabase
+      .from('document_tests')
+      .select('*')
+      .order('id', { ascending: false });
+    if (!error) setDocuments(data || []);
+  };
 
   useEffect(() => {
     fetchDocuments();
   }, []);
 
-  const fetchDocuments = async () => {
-    const { data } = await supabase.from('document_tests').select('*').order('id', { ascending: false });
-    setDocuments(data || []);
-  };
-
-  // 1. Subir archivo inicial
-  const handleUpload = async () => {
-    if (!file) return alert("Selecciona un archivo PDF");
-    setLoading(true);
-
-    const fileName = `${Date.now()}_${file.name}`;
-    const { data, error } = await supabase.storage.from('documentos-prueba').upload(fileName, file);
-
-    if (error) {
-      alert("Error subiendo archivo: " + error.message);
-      setLoading(false);
+  // 1. Subir cualquier archivo PDF adjunto por el usuario
+  const handleFileUpload = async (e) => {
+    e.preventDefault();
+    if (!selectedFile) {
+      alert('Por favor selecciona un archivo PDF primero.');
       return;
     }
 
-    const { data: publicUrlData } = supabase.storage.from('documentos-prueba').getPublicUrl(fileName);
+    setLoading(true);
 
-    await supabase.from('document_tests').insert({
-      title: file.name,
-      file_path: publicUrlData.publicUrl
-    });
+    try {
+      // Crear un nombre único de archivo para evitar colisiones en Supabase
+      const cleanFileName = selectedFile.name.replace(/[^a-zA-Z0-9.]/g, '_');
+      const fileExt = cleanFileName.split('.').pop();
+      
+      if (fileExt.toLowerCase() !== 'pdf') {
+        alert('Para esta prueba de firma digital, adjunta un archivo en formato PDF.');
+        setLoading(false);
+        return;
+      }
 
-    setFile(null);
-    fetchDocuments();
-    setLoading(false);
+      const fileName = `${Date.now()}_${cleanFileName}`;
+
+      // Subir archivo al bucket 'documentos_prueba' en Supabase Storage
+      const { data: uploadData, error: uploadError } = await supabase.storage
+        .from('documentos_prueba')
+        .upload(fileName, selectedFile, {
+          cacheControl: '3600',
+          upsert: false
+        });
+
+      if (uploadError) {
+        throw new Error('Error subiendo archivo: ' + uploadError.message);
+      }
+
+      // Obtener la URL pública del archivo subido
+      const { data: publicUrlData } = supabase.storage
+        .from('documentos_prueba')
+        .getPublicUrl(fileName);
+
+      // Guardar el registro en la base de datos
+      const { error: dbError } = await supabase
+        .from('document_tests')
+        .insert({
+          title: selectedFile.name,
+          file_path: publicUrlData.publicUrl,
+          status: 'PENDING'
+        });
+
+      if (dbError) throw new Error('Error en BD: ' + dbError.message);
+
+      alert('¡Archivo subido con éxito!');
+      setSelectedFile(null);
+      // Limpiar input file del DOM
+      e.target.reset();
+      fetchDocuments();
+    } catch (err) {
+      alert(err.message);
+    } finally {
+      setLoading(false);
+    }
   };
 
-  // 2. Proceso de Firma (Nivel Supervisor / Aprobador)
-  const handleSign = async (doc) => {
+  // 2. Estampar Firma Digital en Nivel Supervisor
+  const handleSignDocument = async (doc) => {
     setLoading(true);
     try {
-      // a. Obtener IP pública del firmante
-      const ipRes = await fetch('https://api.ipify.org?format=json');
-      const { ip } = await ipRes.json();
+      // Obtener IP pública del firmante para trazabilidad ISO
+      let ip = '127.0.0.1';
+      try {
+        const ipRes = await fetch('https://api.ipify.org?format=json');
+        const ipData = await ipRes.json();
+        ip = ipData.ip;
+      } catch (e) {
+        console.warn('No se pudo obtener IP pública, usando local.');
+      }
 
-      // b. Descargar PDF original desde el Storage
-      const existingPdfBytes = await fetch(doc.file_path).then(res => res.arrayBuffer());
+      // Descargar el PDF original cargado
+      const existingPdfBytes = await fetch(doc.file_path).then((res) => res.arrayBuffer());
       const pdfDoc = await PDFDocument.load(existingPdfBytes);
 
-      // c. Estampar la firma en la última página
+      // Estampar el Recuadro de Firma ISO en la primera página
       const pages = pdfDoc.getPages();
-      const lastPage = pages[pages.length - 1];
-      const font = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
+      const firstPage = pages[0];
+      const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
 
       const stamp = `
       ======================================================
-      DOCUMENTO FIRMADO Y APROBADO (PRUEBA ISO)
-      Firmante: Supervisor (supervisor@tuempresa.cl)
+      APROBADO DIGITALMENTE - AUDITORÍA ISO 27001
+      Firmante: Supervisor Pruebas (supervisor@tuempresa.cl)
+      Rol: Supervisor SGSI
       Fecha UTC: ${new Date().toISOString()}
       IP Origen: ${ip}
       ======================================================
       `;
 
-      lastPage.drawText(stamp.trim(), {
-        x: 30,
-        y: 30,
-        size: 8,
-        font: font,
+      firstPage.drawText(stamp.trim(), {
+        x: 40,
+        y: 50,
+        size: 7,
+        font,
         color: rgb(0, 0.2, 0.6),
-        lineHeight: 10
+        lineHeight: 9,
       });
 
-      // d. Guardar el PDF modificado
-      const pdfBytesModified = await pdfDoc.save();
-      const signedFileName = `SIGNED_${Date.now()}_doc.pdf`;
+      // Guardar el PDF con la firma integrada
+      const signedPdfBytes = await pdfDoc.save();
+      const signedFileName = `SIGNED_${Date.now()}.pdf`;
 
-      // e. Subir el nuevo PDF firmado a Supabase Storage
-      const { data: uploadData } = await supabase.storage
-        .from('documentos-prueba')
-        .upload(signedFileName, pdfBytesModified, { contentType: 'application/pdf' });
+      // Subir el archivo firmado al mismo bucket 'documentos_prueba'
+      const { error: uploadError } = await supabase.storage
+        .from('documentos_prueba')
+        .upload(signedFileName, signedPdfBytes, { contentType: 'application/pdf' });
 
-      const { data: signedUrlData } = supabase.storage.from('documentos-prueba').getPublicUrl(signedFileName);
+      if (uploadError) throw new Error('Error guardando firma: ' + uploadError.message);
 
-      // f. Registrar log de auditoría
-      await supabase.from('document_signatures').insert({
-        document_id: doc.id,
-        signer_email: 'supervisor@tuempresa.cl',
-        signer_role: 'SUPERVISOR',
-        ip_address: ip
-      });
+      const { data: finalUrlData } = supabase.storage
+        .from('documentos_prueba')
+        .getPublicUrl(signedFileName);
 
-      // g. Actualizar estado del documento
-      await supabase.from('document_tests').update({
-        status: 'APPROVED',
-        file_path: signedUrlData.publicUrl
-      }).eq('id', doc.id);
+      // Actualizar registro en la Base de Datos
+      await supabase
+        .from('document_tests')
+        .update({
+          status: 'APPROVED',
+          file_path: finalUrlData.publicUrl,
+        })
+        .eq('id', doc.id);
 
-      alert("¡Documento firmado con éxito!");
+      alert('¡Documento Firmado y Aprobado con Éxito!');
+      setSelectedDoc(null);
       fetchDocuments();
     } catch (err) {
-      alert("Error al firmar: " + err.message);
+      alert('Error procesando la firma: ' + err.message);
     } finally {
       setLoading(false);
     }
   };
 
   return (
-    <div style={{ padding: '30px', fontFamily: 'sans-serif', maxWidth: '800px', margin: '0 auto' }}>
-      <h1>PoC: Módulo de Firma Digital y Auditoría</h1>
+    <div style={{ fontFamily: 'sans-serif', padding: '30px', maxWidth: '900px', margin: '0 auto' }}>
+      <h1><FileCheck size={28} /> Módulo de Firma Digital & Seguimiento</h1>
+      <p style={{ color: '#666' }}>Prueba de concepto (PoC) conectada a Supabase</p>
 
-      {/* Subida de Archivos */}
-      <div style={{ padding: '20px', border: '1px solid #ccc', borderRadius: '8px', marginBottom: '20px' }}>
-        <h3>1. Subir documento para prueba</h3>
-        <input type="file" accept="application/pdf" onChange={(e) => setFile(e.target.files[0])} />
-        <button onClick={handleUpload} disabled={loading} style={{ marginLeft: '10px' }}>
-          {loading ? 'Procesando...' : 'Subir Documento'}
-        </button>
-      </div>
+      <hr style={{ margin: '20px 0' }} />
 
-      {/* Lista y Seguimiento */}
-      <h3>2. Seguimiento y Firma de Documentos</h3>
-      {documents.map((doc) => (
-        <div key={doc.id} style={{ border: '1px solid #eee', padding: '15px', marginBottom: '10px', borderRadius: '5px' }}>
-          <p><strong>Archivo:</strong> {doc.title}</p>
-          <p><strong>Estado:</strong> <span style={{ color: doc.status === 'APPROVED' ? 'green' : 'orange' }}>{doc.status}</span></p>
-          <a href={doc.file_path} target="_blank" rel="noreferrer">Ver Documento PDF</a>
-          <br /><br />
-          {doc.status === 'PENDING' && (
-            <button onClick={() => handleSign(doc)} disabled={loading}>
-              Firmar como Supervisor
-            </button>
-          )}
+      {/* SECCIÓN 1: SUBIR ARCHIVO CUALQUIERA */}
+      <section style={{ background: '#f8f9fa', padding: '20px', borderRadius: '8px', marginBottom: '30px' }}>
+        <h3><Upload size={18} /> 1. Subir documento para prueba</h3>
+        <form onSubmit={handleFileUpload} style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
+          <input
+            type="file"
+            accept=".pdf"
+            onChange={(e) => setSelectedFile(e.target.files[0])}
+            style={{ padding: '8px' }}
+          />
+          <button
+            type="submit"
+            disabled={loading}
+            style={{ padding: '8px 16px', background: '#0070f3', color: '#fff', border: 'none', borderRadius: '4px', cursor: 'pointer' }}
+          >
+            {loading ? 'Procesando...' : 'Subir Archivo'}
+          </button>
+        </form>
+      </section>
+
+      {/* SECCIÓN 2: SEGUIMIENTO Y FIRMA */}
+      <section>
+        <h3>2. Seguimiento y Firma de Documentos</h3>
+        <table border="1" cellPadding="10" cellSpacing="0" style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left' }}>
+          <thead>
+            <tr style={{ background: '#eee' }}>
+              <th>ID</th>
+              <th>Nombre del Archivo</th>
+              <th>Estado ISO</th>
+              <th>Acción Supervisor</th>
+            </tr>
+          </thead>
+          <tbody>
+            {documents.length === 0 ? (
+              <tr><td colSpan="4">No hay documentos registrados en la base de datos.</td></tr>
+            ) : (
+              documents.map((doc) => (
+                <tr key={doc.id}>
+                  <td><strong>#{doc.id}</strong></td>
+                  <td><FileText size={14} /> {doc.title}</td>
+                  <td>
+                    {doc.status === 'APPROVED' ? (
+                      <span style={{ color: 'green', fontWeight: 'bold' }}><CheckCircle2 size={14} /> APROBADO</span>
+                    ) : (
+                      <span style={{ color: '#d97706', fontWeight: 'bold' }}><Clock size={14} /> PENDIENTE</span>
+                    )}
+                  </td>
+                  <td>
+                    {doc.status === 'PENDING' ? (
+                      <button
+                        onClick={() => setSelectedDoc(doc)}
+                        style={{ padding: '6px 12px', background: '#22c55e', color: '#fff', border: 'none', borderRadius: '4px', cursor: 'pointer' }}
+                      >
+                        Revisar y Firmar
+                      </button>
+                    ) : (
+                      <a href={doc.file_path} target="_blank" rel="noreferrer" style={{ textDecoration: 'none', color: '#0070f3' }}>
+                        <Eye size={14} /> Ver PDF Firmado
+                      </a>
+                    )}
+                  </td>
+                </tr>
+              ))
+            )}
+          </tbody>
+        </table>
+      </section>
+
+      {/* MODAL DE VISTA PREVIA Y FIRMA */}
+      {selectedDoc && (
+        <div style={{
+          position: 'fixed', top: 0, left: 0, width: '100%', height: '100%',
+          backgroundColor: 'rgba(0,0,0,0.5)', display: 'flex', justifyContent: 'center', alignItems: 'center'
+        }}>
+          <div style={{ background: '#fff', padding: '30px', borderRadius: '8px', maxWidth: '600px', width: '100%' }}>
+            <h2>Vista Previa y Firma de Documento</h2>
+            <p><strong>Archivo:</strong> {selectedDoc.title}</p>
+            
+            <iframe src={selectedDoc.file_path} width="100%" height="250px" title="Preview" />
+
+            <div style={{ marginTop: '20px', display: 'flex', justifyContent: 'flex-end', gap: '10px' }}>
+              <button
+                onClick={() => setSelectedDoc(null)}
+                style={{ padding: '8px 16px', background: '#ccc', border: 'none', borderRadius: '4px' }}
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={() => handleSignDocument(selectedDoc)}
+                disabled={loading}
+                style={{ padding: '8px 16px', background: '#16a34a', color: '#fff', border: 'none', borderRadius: '4px', cursor: 'pointer' }}
+              >
+                {loading ? 'Firmando PDF...' : 'Estampar Firma y Aprobar'}
+              </button>
+            </div>
+          </div>
         </div>
-      ))}
+      )}
     </div>
   );
 }
