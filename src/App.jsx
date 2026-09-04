@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { supabase } from './supabaseClient';
 import { PDFDocument, rgb, StandardFonts } from 'pdf-lib';
 
@@ -7,18 +7,20 @@ export default function App() {
   const [selectedDoc, setSelectedDoc] = useState(null);
   const [selectedFile, setSelectedFile] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [signatureCoords, setSignatureCoords] = useState(null); // { x, y } en escala PDF
+  const [clickPos, setClickPos] = useState(null); // { x, y } en píxeles para mostrar indicador visual
 
-  // Consultar lista de documentos
+  const previewRef = useRef(null);
+
   const fetchDocuments = async () => {
     try {
       const { data, error } = await supabase
         .from('document_tests')
         .select('*')
         .order('id', { ascending: false });
-      
       if (!error) setDocuments(data || []);
     } catch (err) {
-      console.error('Error al conectar con Supabase:', err);
+      console.error(err);
     }
   };
 
@@ -26,21 +28,39 @@ export default function App() {
     fetchDocuments();
   }, []);
 
-  // Función utilitaria para calcular Hash SHA-256
   const generateSHA256 = async (arrayBuffer) => {
     const hashBuffer = await crypto.subtle.digest('SHA-256', arrayBuffer);
     const hashArray = Array.from(new Uint8Array(hashBuffer));
     return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
   };
 
-  // 1. Subir archivo PDF
+  // Capturar clic sobre la vista previa
+  const handlePreviewClick = (e) => {
+    if (!previewRef.current) return;
+    
+    const rect = previewRef.current.getBoundingClientRect();
+    const clickX = e.clientX - rect.left;
+    const clickY = e.clientY - rect.top;
+
+    // Dimensiones del contenedor visual
+    const containerWidth = rect.width;
+    const containerHeight = rect.height;
+
+    // Dimensiones Estándar Carta en Puntos PDF (612 x 792)
+    const pdfWidth = 612;
+    const pdfHeight = 792;
+
+    // Convertir píxeles de pantalla a coordenadas internas del PDF
+    const pdfX = (clickX / containerWidth) * pdfWidth;
+    const pdfY = pdfHeight - ((clickY / containerHeight) * pdfHeight);
+
+    setClickPos({ x: clickX, y: clickY });
+    setSignatureCoords({ x: pdfX, y: pdfY });
+  };
+
   const handleFileUpload = async (e) => {
     e.preventDefault();
-    if (!selectedFile) {
-      alert('Por favor selecciona un archivo PDF.');
-      return;
-    }
-
+    if (!selectedFile) return alert('Selecciona un archivo PDF.');
     setLoading(true);
 
     try {
@@ -51,23 +71,19 @@ export default function App() {
         .from('documentos_prueba')
         .upload(fileName, selectedFile);
 
-      if (uploadError) throw new Error('Error en Storage: ' + uploadError.message);
+      if (uploadError) throw new Error(uploadError.message);
 
       const { data: publicUrlData } = supabase.storage
         .from('documentos_prueba')
         .getPublicUrl(fileName);
 
-      const { error: dbError } = await supabase
-        .from('document_tests')
-        .insert({
-          title: selectedFile.name,
-          file_path: publicUrlData.publicUrl,
-          status: 'PENDING'
-        });
+      await supabase.from('document_tests').insert({
+        title: selectedFile.name,
+        file_path: publicUrlData.publicUrl,
+        status: 'PENDING'
+      });
 
-      if (dbError) throw new Error('Error en Base de Datos: ' + dbError.message);
-
-      alert('¡Archivo subido con éxito!');
+      alert('¡Archivo subido!');
       setSelectedFile(null);
       e.target.reset();
       fetchDocuments();
@@ -78,8 +94,12 @@ export default function App() {
     }
   };
 
-  // 2. Estampar Firma Digital en Posición Específica (Caja 1)
   const handleSignDocument = async (doc) => {
+    if (!signatureCoords) {
+      alert('Por favor haz clic sobre la vista previa para seleccionar la posición de la firma.');
+      return;
+    }
+
     setLoading(true);
     try {
       let ip = '127.0.0.1';
@@ -88,34 +108,30 @@ export default function App() {
         const ipData = await ipRes.json();
         ip = ipData.ip;
       } catch (e) {
-        console.warn('IP pública no disponible');
+        console.warn('IP no disponible');
       }
 
       const existingPdfBytes = await fetch(doc.file_path).then((res) => res.arrayBuffer());
-      
-      // Generar Hash de Integridad SHA-256
       const sha256Hash = await generateSHA256(existingPdfBytes);
-      const shortHash = sha256Hash.substring(0, 16) + '...'; // Versión corta para el recuadro
+      const shortHash = sha256Hash.substring(0, 16) + '...';
 
       const pdfDoc = await PDFDocument.load(existingPdfBytes);
-      const pages = pdfDoc.getPages();
-      const firstPage = pages[0];
+      const firstPage = pdfDoc.getPages()[0];
       const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
 
-      // Bloque de Firma para posicionar sobre "Firma Prueba 1"
       const stamp = `
-      DOCUMENTO APROBADO
-      Firmante: Encargado SGSI
+      APROBADO - ISO 27001
+      Firmante: Supervisor SGSI
       Email: supervisor@empresa.cl
       Fecha: ${new Date().toISOString().split('T')[0]}
       IP: ${ip}
       HASH: ${shortHash}
       `;
 
-      // Posicionar exactamente en la caja izquierda (X: 145, Y: 320)
+      // Estampar exactamente en las coordenadas seleccionadas por el usuario
       firstPage.drawText(stamp.trim(), {
-        x: 145,
-        y: 515,
+        x: signatureCoords.x,
+        y: signatureCoords.y,
         size: 6.5,
         font,
         color: rgb(0, 0.2, 0.6),
@@ -125,11 +141,9 @@ export default function App() {
       const signedPdfBytes = await pdfDoc.save();
       const signedFileName = `SIGNED_${Date.now()}.pdf`;
 
-      const { error: uploadError } = await supabase.storage
+      await supabase.storage
         .from('documentos_prueba')
         .upload(signedFileName, signedPdfBytes, { contentType: 'application/pdf' });
-
-      if (uploadError) throw new Error('Error al guardar firma: ' + uploadError.message);
 
       const { data: finalUrlData } = supabase.storage
         .from('documentos_prueba')
@@ -137,14 +151,13 @@ export default function App() {
 
       await supabase
         .from('document_tests')
-        .update({
-          status: 'APPROVED',
-          file_path: finalUrlData.publicUrl,
-        })
+        .update({ status: 'APPROVED', file_path: finalUrlData.publicUrl })
         .eq('id', doc.id);
 
-      alert('¡Documento Firmado dentro de la Caja 1 con Hash SHA-256!');
+      alert('¡Documento firmado en la ubicación seleccionada!');
       setSelectedDoc(null);
+      setSignatureCoords(null);
+      setClickPos(null);
       fetchDocuments();
     } catch (err) {
       alert('Error en firma: ' + err.message);
@@ -155,29 +168,21 @@ export default function App() {
 
   return (
     <div style={{ fontFamily: 'Arial, sans-serif', padding: '30px', maxWidth: '800px', margin: '0 auto' }}>
-      <h2>Módulo de Firma Digital & Seguimiento ISO</h2>
-      <p style={{ color: '#666' }}>Prueba con Posicionamiento Preciso y Hash SHA-256</p>
+      <h2>Módulo de Firma Digital Interactiva ISO</h2>
+      <p style={{ color: '#666' }}>Haz clic sobre la vista previa para seleccionar la posición de la firma.</p>
 
       <hr style={{ margin: '20px 0' }} />
 
-      {/* SUBIDA DE ARCHIVO */}
       <section style={{ background: '#f4f4f4', padding: '20px', borderRadius: '8px', marginBottom: '30px' }}>
-        <h3>1. Subir documento PDF para prueba</h3>
+        <h3>1. Subir documento PDF</h3>
         <form onSubmit={handleFileUpload} style={{ display: 'flex', gap: '10px' }}>
-          <input
-            type="file"
-            accept=".pdf"
-            onChange={(e) => setSelectedFile(e.target.files[0])}
-          />
-          <button type="submit" disabled={loading} style={{ padding: '8px 16px', background: '#0070f3', color: '#fff', border: 'none', borderRadius: '4px', cursor: 'pointer' }}>
-            {loading ? 'Subiendo...' : 'Subir Archivo'}
-          </button>
+          <input type="file" accept=".pdf" onChange={(e) => setSelectedFile(e.target.files[0])} />
+          <button type="submit" disabled={loading}>{loading ? 'Subiendo...' : 'Subir Archivo'}</button>
         </form>
       </section>
 
-      {/* LISTA DE SEGUIMIENTO */}
       <section>
-        <h3>2. Seguimiento y Firma de Documentos</h3>
+        <h3>2. Seguimiento y Firma</h3>
         <table border="1" cellPadding="8" cellSpacing="0" style={{ width: '100%', borderCollapse: 'collapse' }}>
           <thead>
             <tr style={{ background: '#eee' }}>
@@ -188,47 +193,76 @@ export default function App() {
             </tr>
           </thead>
           <tbody>
-            {documents.length === 0 ? (
-              <tr><td colSpan="4">No hay documentos registrados.</td></tr>
-            ) : (
-              documents.map((doc) => (
-                <tr key={doc.id}>
-                  <td>#{doc.id}</td>
-                  <td>{doc.title}</td>
-                  <td>
-                    <strong style={{ color: doc.status === 'APPROVED' ? 'green' : 'orange' }}>
-                      {doc.status}
-                    </strong>
-                  </td>
-                  <td>
-                    {doc.status === 'PENDING' ? (
-                      <button onClick={() => setSelectedDoc(doc)} style={{ padding: '4px 8px', background: '#22c55e', color: '#fff', border: 'none', borderRadius: '4px', cursor: 'pointer' }}>
-                        Firmar en Caja 1
-                      </button>
-                    ) : (
-                      <a href={doc.file_path} target="_blank" rel="noreferrer" style={{ color: '#0070f3' }}>
-                        Ver PDF Firmado
-                      </a>
-                    )}
-                  </td>
-                </tr>
-              ))
-            )}
+            {documents.map((doc) => (
+              <tr key={doc.id}>
+                <td>#{doc.id}</td>
+                <td>{doc.title}</td>
+                <td><strong style={{ color: doc.status === 'APPROVED' ? 'green' : 'orange' }}>{doc.status}</strong></td>
+                <td>
+                  {doc.status === 'PENDING' ? (
+                    <button onClick={() => { setSelectedDoc(doc); setClickPos(null); setSignatureCoords(null); }}>
+                      Seleccionar Punto & Firmar
+                    </button>
+                  ) : (
+                    <a href={doc.file_path} target="_blank" rel="noreferrer">Ver Firmado</a>
+                  )}
+                </td>
+              </tr>
+            ))}
           </tbody>
         </table>
       </section>
 
-      {/* MODAL DE FIRMA */}
+      {/* MODAL DE SELECCIÓN VISUAL */}
       {selectedDoc && (
-        <div style={{ position: 'fixed', top: 0, left: 0, width: '100%', height: '100%', background: 'rgba(0,0,0,0.5)', display: 'flex', justifyContent: 'center', alignItems: 'center' }}>
-          <div style={{ background: '#fff', padding: '20px', borderRadius: '8px', width: '500px' }}>
-            <h3>Vista Previa y Firma</h3>
-            <p><strong>Archivo:</strong> {selectedDoc.title}</p>
-            <iframe src={selectedDoc.file_path} width="100%" height="200px" title="PDF Preview" />
+        <div style={{ position: 'fixed', top: 0, left: 0, width: '100%', height: '100%', background: 'rgba(0,0,0,0.6)', display: 'flex', justifyContent: 'center', alignItems: 'center' }}>
+          <div style={{ background: '#fff', padding: '20px', borderRadius: '8px', width: '550px' }}>
+            <h3>Haz clic en la caja donde deseas estampar la firma</h3>
+            
+            {/* Contenedor Interactivo con Marcador */}
+            <div 
+              ref={previewRef}
+              onClick={handlePreviewClick}
+              style={{ position: 'relative', width: '100%', height: '350px', border: '2px dashed #0070f3', cursor: 'crosshair', overflow: 'hidden' }}
+            >
+              <iframe 
+                src={selectedDoc.file_path} 
+                width="100%" 
+                height="100%" 
+                title="PDF Preview" 
+                style={{ pointerEvents: 'none' }} // Desactiva la interacción directa con el iframe para capturar el clic
+              />
+
+              {/* Indicador rojo visual de la posición seleccionada */}
+              {clickPos && (
+                <div style={{
+                  position: 'absolute',
+                  left: `${clickPos.x}px`,
+                  top: `${clickPos.y}px`,
+                  width: '12px',
+                  height: '12px',
+                  backgroundColor: 'red',
+                  borderRadius: '50%',
+                  transform: 'translate(-50%, -50%)',
+                  boxShadow: '0 0 5px rgba(0,0,0,0.5)'
+                }} />
+              )}
+            </div>
+
+            <p style={{ fontSize: '12px', color: signatureCoords ? 'green' : 'red' }}>
+              {signatureCoords 
+                ? `Punto seleccionado: (X: ${Math.round(signatureCoords.x)}, Y: ${Math.round(signatureCoords.y)})` 
+                : 'Haz clic en el área azul del documento para fijar el punto.'}
+            </p>
+
             <div style={{ marginTop: '15px', display: 'flex', justifyContent: 'flex-end', gap: '10px' }}>
               <button onClick={() => setSelectedDoc(null)}>Cancelar</button>
-              <button onClick={() => handleSignDocument(selectedDoc)} disabled={loading} style={{ background: '#16a34a', color: '#fff', border: 'none', padding: '6px 12px', borderRadius: '4px' }}>
-                {loading ? 'Procesando...' : 'Estampar en Caja 1'}
+              <button 
+                onClick={() => handleSignDocument(selectedDoc)} 
+                disabled={loading || !signatureCoords}
+                style={{ background: signatureCoords ? '#16a34a' : '#ccc', color: '#fff', border: 'none', padding: '6px 12px', borderRadius: '4px' }}
+              >
+                {loading ? 'Procesando...' : 'Estampar Firma Aquí'}
               </button>
             </div>
           </div>
