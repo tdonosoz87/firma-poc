@@ -115,16 +115,21 @@ export default function App() {
       
       const { width: pdfWidth, height: pdfHeight } = firstPage.getSize();
 
-      // Ajustamos targetY para compensar la altura del bloque compacto (3 líneas = ~21pt)
-      const targetX = normalizedCoords.percentX * pdfWidth;
-      const targetY = pdfHeight - (normalizedCoords.percentY * pdfHeight) + 10;
+      // CENTRADO AUTOMÁTICO:
+      // Desplazamos X 50pt a la izquierda para centrar horizontalmente el sello respecto al clic
+      const rawX = normalizedCoords.percentX * pdfWidth;
+      const targetX = Math.max(10, rawX - 50);
+
+      // Calculamos Y con un ligero centrado vertical
+      const rawY = pdfHeight - (normalizedCoords.percentY * pdfHeight);
+      const targetY = rawY - 15;
 
       const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
 
-      // Formato ultracompacto en 3 líneas
+      // Sello compacto
       const stamp = `
-      [ FIRMA DIGITAL ]
-      Firmante: Supervisor SGSI (tdonoso@zenware.cl)
+      [ FIRMA DIGITAL ISO 27001 ]
+      Firmante: Supervisor SGSI (supervisor@empresa.cl)
       Fecha: ${new Date().toISOString().split('T')[0]} | IP: ${ip} | HASH: ${shortHash}
       `;
 
@@ -155,7 +160,7 @@ export default function App() {
         .update({ status: 'APPROVED', file_path: finalUrlData.publicUrl })
         .eq('id', doc.id);
 
-      alert('¡Documento firmado en el recuadro exacto!');
+      alert('¡Documento firmado con sello centrado!');
       setSelectedDoc(null);
       setNormalizedCoords(null);
       setClickPos(null);
@@ -170,7 +175,7 @@ export default function App() {
   return (
     <div style={{ fontFamily: 'Arial, sans-serif', padding: '30px', maxWidth: '800px', margin: '0 auto' }}>
       <h2>Módulo de Firma Digital Adaptativa ISO</h2>
-      <p style={{ color: '#666' }}>Sello compacto ajustado al recuadro con Hash SHA-256.</p>
+      <p style={{ color: '#666' }}>Centrado automático de la firma en el punto de clic.</p>
 
       <hr style={{ margin: '20px 0' }} />
 
@@ -232,7 +237,7 @@ export default function App() {
       {selectedDoc && (
         <div style={{ position: 'fixed', top: 0, left: 0, width: '100%', height: '100%', background: 'rgba(0,0,0,0.6)', display: 'flex', justifyContent: 'center', alignItems: 'center' }}>
           <div style={{ background: '#fff', padding: '20px', borderRadius: '8px', width: '420px' }}>
-            <h3>Haz clic dentro del recuadro de firma</h3>
+            <h3>Haz clic al centro de la caja para firmar</h3>
             
             <div 
               ref={previewRef}
