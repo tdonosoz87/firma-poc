@@ -114,8 +114,8 @@ export default function App() {
 
       // Posicionar exactamente en la caja izquierda (X: 145, Y: 320)
       firstPage.drawText(stamp.trim(), {
-        x: 100,
-        y: 520,
+        x: 145,
+        y: 515,
         size: 6.5,
         font,
         color: rgb(0, 0.2, 0.6),
