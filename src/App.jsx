@@ -8,13 +8,11 @@ export default function App() {
   const [selectedFile, setSelectedFile] = useState(null);
   const [loading, setLoading] = useState(false);
   
-  // Posición porcentual (0.0 a 1.0)
-  const [normalizedCoords, setNormalizedCoords] = useState(null); // { percentX, percentY }
-  const [clickPos, setClickPos] = useState(null); // { x, y } para la marca roja visual
+  const [normalizedCoords, setNormalizedCoords] = useState(null);
+  const [clickPos, setClickPos] = useState(null);
 
   const previewRef = useRef(null);
 
-  // Consultar lista de documentos desde Supabase
   const fetchDocuments = async () => {
     try {
       const { data, error } = await supabase
@@ -31,14 +29,12 @@ export default function App() {
     fetchDocuments();
   }, []);
 
-  // Generador de Hash Criptográfico SHA-256
   const generateSHA256 = async (arrayBuffer) => {
     const hashBuffer = await crypto.subtle.digest('SHA-256', arrayBuffer);
     const hashArray = Array.from(new Uint8Array(hashBuffer));
     return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
   };
 
-  // Capturar clic sobre la vista previa
   const handlePreviewClick = (e) => {
     if (!previewRef.current) return;
     
@@ -46,7 +42,6 @@ export default function App() {
     const clickX = e.clientX - rect.left;
     const clickY = e.clientY - rect.top;
 
-    // Posición porcentual dentro del contenedor visual
     const percentX = clickX / rect.width;
     const percentY = clickY / rect.height;
 
@@ -54,7 +49,6 @@ export default function App() {
     setNormalizedCoords({ percentX, percentY });
   };
 
-  // Subir archivo PDF inicial
   const handleFileUpload = async (e) => {
     e.preventDefault();
     if (!selectedFile) return alert('Por favor selecciona un archivo PDF.');
@@ -95,7 +89,6 @@ export default function App() {
     }
   };
 
-  // Estampar Firma Digital en la Coordenada Exacta
   const handleSignDocument = async (doc) => {
     if (!normalizedCoords) {
       alert('Por favor haz clic sobre la vista previa para seleccionar la posición.');
@@ -115,36 +108,33 @@ export default function App() {
 
       const existingPdfBytes = await fetch(doc.file_path).then((res) => res.arrayBuffer());
       const sha256Hash = await generateSHA256(existingPdfBytes);
-      const shortHash = sha256Hash.substring(0, 16) + '...';
+      const shortHash = sha256Hash.substring(0, 12) + '...';
 
       const pdfDoc = await PDFDocument.load(existingPdfBytes);
       const firstPage = pdfDoc.getPages()[0];
       
-      // Obtener tamaño real del PDF cargado
       const { width: pdfWidth, height: pdfHeight } = firstPage.getSize();
 
-      // Conversión porcentual a puntos de PDF con compensación vertical fina (+20pt)
+      // Ajustamos targetY para compensar la altura del bloque compacto (3 líneas = ~21pt)
       const targetX = normalizedCoords.percentX * pdfWidth;
-      const targetY = pdfHeight - (normalizedCoords.percentY * pdfHeight) + 20;
+      const targetY = pdfHeight - (normalizedCoords.percentY * pdfHeight) + 10;
 
       const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
 
+      // Formato ultracompacto en 3 líneas
       const stamp = `
-      APROBADO - ISO 27001
-      Firmante: Supervisor SGSI
-      Email: supervisor@empresa.cl
-      Fecha: ${new Date().toISOString().split('T')[0]}
-      IP: ${ip}
-      HASH: ${shortHash}
+      [ FIRMA DIGITAL ISO 27001 ]
+      Firmante: Supervisor SGSI (supervisor@empresa.cl)
+      Fecha: ${new Date().toISOString().split('T')[0]} | IP: ${ip} | HASH: ${shortHash}
       `;
 
       firstPage.drawText(stamp.trim(), {
         x: targetX,
         y: Math.max(10, targetY),
-        size: 6.5,
+        size: 5.5,
         font,
         color: rgb(0, 0.2, 0.6),
-        lineHeight: 8,
+        lineHeight: 7,
       });
 
       const signedPdfBytes = await pdfDoc.save();
@@ -165,7 +155,7 @@ export default function App() {
         .update({ status: 'APPROVED', file_path: finalUrlData.publicUrl })
         .eq('id', doc.id);
 
-      alert('¡Documento firmado en el punto exacto!');
+      alert('¡Documento firmado en el recuadro exacto!');
       setSelectedDoc(null);
       setNormalizedCoords(null);
       setClickPos(null);
@@ -180,11 +170,10 @@ export default function App() {
   return (
     <div style={{ fontFamily: 'Arial, sans-serif', padding: '30px', maxWidth: '800px', margin: '0 auto' }}>
       <h2>Módulo de Firma Digital Adaptativa ISO</h2>
-      <p style={{ color: '#666' }}>Posicionamiento exacto sobre la línea con Hash SHA-256.</p>
+      <p style={{ color: '#666' }}>Sello compacto ajustado al recuadro con Hash SHA-256.</p>
 
       <hr style={{ margin: '20px 0' }} />
 
-      {/* SUBIDA DE ARCHIVO */}
       <section style={{ background: '#f4f4f4', padding: '20px', borderRadius: '8px', marginBottom: '30px' }}>
         <h3>1. Subir documento PDF para prueba</h3>
         <form onSubmit={handleFileUpload} style={{ display: 'flex', gap: '10px' }}>
@@ -195,7 +184,6 @@ export default function App() {
         </form>
       </section>
 
-      {/* LISTA DE SEGUIMIENTO */}
       <section>
         <h3>2. Seguimiento y Firma de Documentos</h3>
         <table border="1" cellPadding="8" cellSpacing="0" style={{ width: '100%', borderCollapse: 'collapse' }}>
@@ -241,11 +229,10 @@ export default function App() {
         </table>
       </section>
 
-      {/* MODAL CON PROPORCIÓN DE ASPECTO PUNTUAL */}
       {selectedDoc && (
         <div style={{ position: 'fixed', top: 0, left: 0, width: '100%', height: '100%', background: 'rgba(0,0,0,0.6)', display: 'flex', justifyContent: 'center', alignItems: 'center' }}>
           <div style={{ background: '#fff', padding: '20px', borderRadius: '8px', width: '420px' }}>
-            <h3>Haz clic en la caja exacta para estampar</h3>
+            <h3>Haz clic dentro del recuadro de firma</h3>
             
             <div 
               ref={previewRef}
