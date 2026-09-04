@@ -8,12 +8,13 @@ export default function App() {
   const [selectedFile, setSelectedFile] = useState(null);
   const [loading, setLoading] = useState(false);
   
-  // Guardamos proporciones relativas (0% a 100%) en lugar de píxeles fijos
+  // Guardamos proporciones relativas (0% a 100%)
   const [normalizedCoords, setNormalizedCoords] = useState(null); // { percentX, percentY }
   const [clickPos, setClickPos] = useState(null); // { x, y } para la marca roja visual
 
   const previewRef = useRef(null);
 
+  // Consultar lista de documentos desde Supabase
   const fetchDocuments = async () => {
     try {
       const { data, error } = await supabase
@@ -22,7 +23,7 @@ export default function App() {
         .order('id', { ascending: false });
       if (!error) setDocuments(data || []);
     } catch (err) {
-      console.error(err);
+      console.error('Error consultando Supabase:', err);
     }
   };
 
@@ -30,13 +31,14 @@ export default function App() {
     fetchDocuments();
   }, []);
 
+  // Generador de Hash Criptográfico SHA-256
   const generateSHA256 = async (arrayBuffer) => {
     const hashBuffer = await crypto.subtle.digest('SHA-256', arrayBuffer);
     const hashArray = Array.from(new Uint8Array(hashBuffer));
     return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
   };
 
-  // Capturar porcentaje exacto del clic respecto al contenedor visual
+  // Capturar clic exacto sobre la vista previa
   const handlePreviewClick = (e) => {
     if (!previewRef.current) return;
     
@@ -44,7 +46,7 @@ export default function App() {
     const clickX = e.clientX - rect.left;
     const clickY = e.clientY - rect.top;
 
-    // Calculamos la posición en porcentaje (0.0 a 1.0)
+    // Posición porcentual en la ventana
     const percentX = clickX / rect.width;
     const percentY = clickY / rect.height;
 
@@ -52,9 +54,10 @@ export default function App() {
     setNormalizedCoords({ percentX, percentY });
   };
 
+  // Subir archivo PDF inicial
   const handleFileUpload = async (e) => {
     e.preventDefault();
-    if (!selectedFile) return alert('Selecciona un archivo PDF.');
+    if (!selectedFile) return alert('Por favor selecciona un archivo PDF.');
     setLoading(true);
 
     try {
@@ -65,19 +68,23 @@ export default function App() {
         .from('documentos_prueba')
         .upload(fileName, selectedFile);
 
-      if (uploadError) throw new Error(uploadError.message);
+      if (uploadError) throw new Error('Error en Storage: ' + uploadError.message);
 
       const { data: publicUrlData } = supabase.storage
         .from('documentos_prueba')
         .getPublicUrl(fileName);
 
-      await supabase.from('document_tests').insert({
-        title: selectedFile.name,
-        file_path: publicUrlData.publicUrl,
-        status: 'PENDING'
-      });
+      const { error: dbError } = await supabase
+        .from('document_tests')
+        .insert({
+          title: selectedFile.name,
+          file_path: publicUrlData.publicUrl,
+          status: 'PENDING'
+        });
 
-      alert('¡Archivo subido!');
+      if (dbError) throw new Error('Error en BD: ' + dbError.message);
+
+      alert('¡Archivo subido con éxito!');
       setSelectedFile(null);
       e.target.reset();
       fetchDocuments();
@@ -88,6 +95,7 @@ export default function App() {
     }
   };
 
+  // Estampar Firma Digital en las Coordenadas Elegidas
   const handleSignDocument = async (doc) => {
     if (!normalizedCoords) {
       alert('Por favor haz clic sobre la vista previa para seleccionar la posición.');
@@ -112,13 +120,14 @@ export default function App() {
       const pdfDoc = await PDFDocument.load(existingPdfBytes);
       const firstPage = pdfDoc.getPages()[0];
       
-      // LECTURA DINÁMICA: Obtener el tamaño REAL del PDF subido
+      // Obtener tamaño real del PDF
       const { width: pdfWidth, height: pdfHeight } = firstPage.getSize();
 
-      // Convertimos los porcentajes a las dimensiones reales de esta hoja específica
+      // Compensación de altura del bloque de texto (45pt) para alinear la parte superior del sello al clic
+      const textBlockHeight = 45; 
+
       const targetX = normalizedCoords.percentX * pdfWidth;
-      // Invertimos el eje Y porque PDF mide desde abajo hacia arriba
-      const targetY = pdfHeight - (normalizedCoords.percentY * pdfHeight);
+      const targetY = pdfHeight - (normalizedCoords.percentY * pdfHeight) - textBlockHeight;
 
       const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
 
@@ -131,10 +140,9 @@ export default function App() {
       HASH: ${shortHash}
       `;
 
-      // Estampar en las coordenadas dinámicas calculadas
       firstPage.drawText(stamp.trim(), {
         x: targetX,
-        y: targetY,
+        y: Math.max(10, targetY),
         size: 6.5,
         font,
         color: rgb(0, 0.2, 0.6),
@@ -144,9 +152,11 @@ export default function App() {
       const signedPdfBytes = await pdfDoc.save();
       const signedFileName = `SIGNED_${Date.now()}.pdf`;
 
-      await supabase.storage
+      const { error: uploadError } = await supabase.storage
         .from('documentos_prueba')
         .upload(signedFileName, signedPdfBytes, { contentType: 'application/pdf' });
+
+      if (uploadError) throw new Error('Error al guardar firma: ' + uploadError.message);
 
       const { data: finalUrlData } = supabase.storage
         .from('documentos_prueba')
@@ -157,7 +167,7 @@ export default function App() {
         .update({ status: 'APPROVED', file_path: finalUrlData.publicUrl })
         .eq('id', doc.id);
 
-      alert('¡Documento firmado con ajuste automático de página!');
+      alert('¡Documento firmado en la ubicación seleccionada!');
       setSelectedDoc(null);
       setNormalizedCoords(null);
       setClickPos(null);
@@ -172,20 +182,24 @@ export default function App() {
   return (
     <div style={{ fontFamily: 'Arial, sans-serif', padding: '30px', maxWidth: '800px', margin: '0 auto' }}>
       <h2>Módulo de Firma Digital Adaptativa ISO</h2>
-      <p style={{ color: '#666' }}>Ajuste automático de coordenadas según el tamaño real del PDF.</p>
+      <p style={{ color: '#666' }}>Ajuste automático de coordenadas y proporción visual 1:1.</p>
 
       <hr style={{ margin: '20px 0' }} />
 
+      {/* SUBIDA DE ARCHIVO */}
       <section style={{ background: '#f4f4f4', padding: '20px', borderRadius: '8px', marginBottom: '30px' }}>
-        <h3>1. Subir documento PDF</h3>
+        <h3>1. Subir documento PDF para prueba</h3>
         <form onSubmit={handleFileUpload} style={{ display: 'flex', gap: '10px' }}>
           <input type="file" accept=".pdf" onChange={(e) => setSelectedFile(e.target.files[0])} />
-          <button type="submit" disabled={loading}>{loading ? 'Subiendo...' : 'Subir Archivo'}</button>
+          <button type="submit" disabled={loading} style={{ padding: '8px 16px', background: '#0070f3', color: '#fff', border: 'none', borderRadius: '4px', cursor: 'pointer' }}>
+            {loading ? 'Subiendo...' : 'Subir Archivo'}
+          </button>
         </form>
       </section>
 
+      {/* LISTA DE SEGUIMIENTO */}
       <section>
-        <h3>2. Seguimiento y Firma</h3>
+        <h3>2. Seguimiento y Firma de Documentos</h3>
         <table border="1" cellPadding="8" cellSpacing="0" style={{ width: '100%', borderCollapse: 'collapse' }}>
           <thead>
             <tr style={{ background: '#eee' }}>
@@ -196,39 +210,59 @@ export default function App() {
             </tr>
           </thead>
           <tbody>
-            {documents.map((doc) => (
-              <tr key={doc.id}>
-                <td>#{doc.id}</td>
-                <td>{doc.title}</td>
-                <td><strong style={{ color: doc.status === 'APPROVED' ? 'green' : 'orange' }}>{doc.status}</strong></td>
-                <td>
-                  {doc.status === 'PENDING' ? (
-                    <button onClick={() => { setSelectedDoc(doc); setClickPos(null); setNormalizedCoords(null); }}>
-                      Ubicar & Firmar
-                    </button>
-                  ) : (
-                    <a href={doc.file_path} target="_blank" rel="noreferrer">Ver Firmado</a>
-                  )}
-                </td>
-              </tr>
-            ))}
+            {documents.length === 0 ? (
+              <tr><td colSpan="4">No hay documentos registrados.</td></tr>
+            ) : (
+              documents.map((doc) => (
+                <tr key={doc.id}>
+                  <td>#{doc.id}</td>
+                  <td>{doc.title}</td>
+                  <td>
+                    <strong style={{ color: doc.status === 'APPROVED' ? 'green' : 'orange' }}>
+                      {doc.status}
+                    </strong>
+                  </td>
+                  <td>
+                    {doc.status === 'PENDING' ? (
+                      <button 
+                        onClick={() => { setSelectedDoc(doc); setClickPos(null); setNormalizedCoords(null); }}
+                        style={{ padding: '4px 8px', background: '#22c55e', color: '#fff', border: 'none', borderRadius: '4px', cursor: 'pointer' }}
+                      >
+                        Ubicar & Firmar
+                      </button>
+                    ) : (
+                      <a href={doc.file_path} target="_blank" rel="noreferrer" style={{ color: '#0070f3' }}>
+                        Ver Firmado
+                      </a>
+                    )}
+                  </td>
+                </tr>
+              ))
+            )}
           </tbody>
         </table>
       </section>
 
-      {/* MODAL CON INTERFACING ADAPTATIVA */}
+      {/* MODAL CON RELACIÓN DE ASPECTO EXACTA */}
       {selectedDoc && (
         <div style={{ position: 'fixed', top: 0, left: 0, width: '100%', height: '100%', background: 'rgba(0,0,0,0.6)', display: 'flex', justifyContent: 'center', alignItems: 'center' }}>
-          <div style={{ background: '#fff', padding: '20px', borderRadius: '8px', width: '550px' }}>
+          <div style={{ background: '#fff', padding: '20px', borderRadius: '8px', width: '420px' }}>
             <h3>Haz clic en el recuadro exacto para estampar</h3>
             
             <div 
               ref={previewRef}
               onClick={handlePreviewClick}
-              style={{ position: 'relative', width: '100%', height: '400px', border: '2px dashed #0070f3', cursor: 'crosshair', overflow: 'hidden' }}
+              style={{ 
+                position: 'relative', 
+                width: '100%', 
+                aspectRatio: '1 / 1.294', // Relación de aspecto exactos Hoja Carta
+                border: '2px dashed #0070f3', 
+                cursor: 'crosshair', 
+                overflow: 'hidden' 
+              }}
             >
               <iframe 
-                src={`${selectedDoc.file_path}#toolbar=0&navpanes=0`} 
+                src={`${selectedDoc.file_path}#toolbar=0&navpanes=0&view=FitH`} 
                 width="100%" 
                 height="100%" 
                 title="PDF Preview" 
@@ -240,8 +274,8 @@ export default function App() {
                   position: 'absolute',
                   left: `${clickPos.x}px`,
                   top: `${clickPos.y}px`,
-                  width: '12px',
-                  height: '12px',
+                  width: '10px',
+                  height: '10px',
                   backgroundColor: 'red',
                   borderRadius: '50%',
                   transform: 'translate(-50%, -50%)',
@@ -250,18 +284,18 @@ export default function App() {
               )}
             </div>
 
-            <p style={{ fontSize: '12px', color: normalizedCoords ? 'green' : 'red' }}>
+            <p style={{ fontSize: '12px', color: normalizedCoords ? 'green' : 'red', marginTop: '10px' }}>
               {normalizedCoords 
-                ? `Punto fijado: (${Math.round(normalizedCoords.percentX * 100)}% horizontal, ${Math.round(normalizedCoords.percentY * 100)}% vertical)` 
+                ? `Punto fijado: (${Math.round(normalizedCoords.percentX * 100)}% H, ${Math.round(normalizedCoords.percentY * 100)}% V)` 
                 : 'Haz clic sobre el documento para fijar el punto.'}
             </p>
 
             <div style={{ marginTop: '15px', display: 'flex', justifyContent: 'flex-end', gap: '10px' }}>
-              <button onClick={() => setSelectedDoc(null)}>Cancelar</button>
+              <button onClick={() => setSelectedDoc(null)} style={{ padding: '6px 12px' }}>Cancelar</button>
               <button 
                 onClick={() => handleSignDocument(selectedDoc)} 
                 disabled={loading || !normalizedCoords}
-                style={{ background: normalizedCoords ? '#16a34a' : '#ccc', color: '#fff', border: 'none', padding: '6px 12px', borderRadius: '4px' }}
+                style={{ background: normalizedCoords ? '#16a34a' : '#ccc', color: '#fff', border: 'none', padding: '6px 12px', borderRadius: '4px', cursor: 'pointer' }}
               >
                 {loading ? 'Procesando...' : 'Estampar Firma'}
               </button>
