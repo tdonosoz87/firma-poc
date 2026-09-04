@@ -7,8 +7,10 @@ export default function App() {
   const [selectedDoc, setSelectedDoc] = useState(null);
   const [selectedFile, setSelectedFile] = useState(null);
   const [loading, setLoading] = useState(false);
-  const [signatureCoords, setSignatureCoords] = useState(null); // { x, y } en escala PDF
-  const [clickPos, setClickPos] = useState(null); // { x, y } en píxeles para mostrar indicador visual
+  
+  // Guardamos proporciones relativas (0% a 100%) en lugar de píxeles fijos
+  const [normalizedCoords, setNormalizedCoords] = useState(null); // { percentX, percentY }
+  const [clickPos, setClickPos] = useState(null); // { x, y } para la marca roja visual
 
   const previewRef = useRef(null);
 
@@ -34,7 +36,7 @@ export default function App() {
     return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
   };
 
-  // Capturar clic sobre la vista previa
+  // Capturar porcentaje exacto del clic respecto al contenedor visual
   const handlePreviewClick = (e) => {
     if (!previewRef.current) return;
     
@@ -42,20 +44,12 @@ export default function App() {
     const clickX = e.clientX - rect.left;
     const clickY = e.clientY - rect.top;
 
-    // Dimensiones del contenedor visual
-    const containerWidth = rect.width;
-    const containerHeight = rect.height;
-
-    // Dimensiones Estándar Carta en Puntos PDF (612 x 792)
-    const pdfWidth = 612;
-    const pdfHeight = 792;
-
-    // Convertir píxeles de pantalla a coordenadas internas del PDF
-    const pdfX = (clickX / containerWidth) * pdfWidth;
-    const pdfY = pdfHeight - ((clickY / containerHeight) * pdfHeight);
+    // Calculamos la posición en porcentaje (0.0 a 1.0)
+    const percentX = clickX / rect.width;
+    const percentY = clickY / rect.height;
 
     setClickPos({ x: clickX, y: clickY });
-    setSignatureCoords({ x: pdfX, y: pdfY });
+    setNormalizedCoords({ percentX, percentY });
   };
 
   const handleFileUpload = async (e) => {
@@ -95,8 +89,8 @@ export default function App() {
   };
 
   const handleSignDocument = async (doc) => {
-    if (!signatureCoords) {
-      alert('Por favor haz clic sobre la vista previa para seleccionar la posición de la firma.');
+    if (!normalizedCoords) {
+      alert('Por favor haz clic sobre la vista previa para seleccionar la posición.');
       return;
     }
 
@@ -117,6 +111,15 @@ export default function App() {
 
       const pdfDoc = await PDFDocument.load(existingPdfBytes);
       const firstPage = pdfDoc.getPages()[0];
+      
+      // LECTURA DINÁMICA: Obtener el tamaño REAL del PDF subido
+      const { width: pdfWidth, height: pdfHeight } = firstPage.getSize();
+
+      // Convertimos los porcentajes a las dimensiones reales de esta hoja específica
+      const targetX = normalizedCoords.percentX * pdfWidth;
+      // Invertimos el eje Y porque PDF mide desde abajo hacia arriba
+      const targetY = pdfHeight - (normalizedCoords.percentY * pdfHeight);
+
       const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
 
       const stamp = `
@@ -128,10 +131,10 @@ export default function App() {
       HASH: ${shortHash}
       `;
 
-      // Estampar exactamente en las coordenadas seleccionadas por el usuario
+      // Estampar en las coordenadas dinámicas calculadas
       firstPage.drawText(stamp.trim(), {
-        x: signatureCoords.x,
-        y: signatureCoords.y,
+        x: targetX,
+        y: targetY,
         size: 6.5,
         font,
         color: rgb(0, 0.2, 0.6),
@@ -154,9 +157,9 @@ export default function App() {
         .update({ status: 'APPROVED', file_path: finalUrlData.publicUrl })
         .eq('id', doc.id);
 
-      alert('¡Documento firmado en la ubicación seleccionada!');
+      alert('¡Documento firmado con ajuste automático de página!');
       setSelectedDoc(null);
-      setSignatureCoords(null);
+      setNormalizedCoords(null);
       setClickPos(null);
       fetchDocuments();
     } catch (err) {
@@ -168,8 +171,8 @@ export default function App() {
 
   return (
     <div style={{ fontFamily: 'Arial, sans-serif', padding: '30px', maxWidth: '800px', margin: '0 auto' }}>
-      <h2>Módulo de Firma Digital Interactiva ISO</h2>
-      <p style={{ color: '#666' }}>Haz clic sobre la vista previa para seleccionar la posición de la firma.</p>
+      <h2>Módulo de Firma Digital Adaptativa ISO</h2>
+      <p style={{ color: '#666' }}>Ajuste automático de coordenadas según el tamaño real del PDF.</p>
 
       <hr style={{ margin: '20px 0' }} />
 
@@ -200,8 +203,8 @@ export default function App() {
                 <td><strong style={{ color: doc.status === 'APPROVED' ? 'green' : 'orange' }}>{doc.status}</strong></td>
                 <td>
                   {doc.status === 'PENDING' ? (
-                    <button onClick={() => { setSelectedDoc(doc); setClickPos(null); setSignatureCoords(null); }}>
-                      Seleccionar Punto & Firmar
+                    <button onClick={() => { setSelectedDoc(doc); setClickPos(null); setNormalizedCoords(null); }}>
+                      Ubicar & Firmar
                     </button>
                   ) : (
                     <a href={doc.file_path} target="_blank" rel="noreferrer">Ver Firmado</a>
@@ -213,27 +216,25 @@ export default function App() {
         </table>
       </section>
 
-      {/* MODAL DE SELECCIÓN VISUAL */}
+      {/* MODAL CON INTERFACING ADAPTATIVA */}
       {selectedDoc && (
         <div style={{ position: 'fixed', top: 0, left: 0, width: '100%', height: '100%', background: 'rgba(0,0,0,0.6)', display: 'flex', justifyContent: 'center', alignItems: 'center' }}>
           <div style={{ background: '#fff', padding: '20px', borderRadius: '8px', width: '550px' }}>
-            <h3>Haz clic en la caja donde deseas estampar la firma</h3>
+            <h3>Haz clic en el recuadro exacto para estampar</h3>
             
-            {/* Contenedor Interactivo con Marcador */}
             <div 
               ref={previewRef}
               onClick={handlePreviewClick}
-              style={{ position: 'relative', width: '100%', height: '350px', border: '2px dashed #0070f3', cursor: 'crosshair', overflow: 'hidden' }}
+              style={{ position: 'relative', width: '100%', height: '400px', border: '2px dashed #0070f3', cursor: 'crosshair', overflow: 'hidden' }}
             >
               <iframe 
-                src={selectedDoc.file_path} 
+                src={`${selectedDoc.file_path}#toolbar=0&navpanes=0`} 
                 width="100%" 
                 height="100%" 
                 title="PDF Preview" 
-                style={{ pointerEvents: 'none' }} // Desactiva la interacción directa con el iframe para capturar el clic
+                style={{ pointerEvents: 'none', border: 'none' }}
               />
 
-              {/* Indicador rojo visual de la posición seleccionada */}
               {clickPos && (
                 <div style={{
                   position: 'absolute',
@@ -249,20 +250,20 @@ export default function App() {
               )}
             </div>
 
-            <p style={{ fontSize: '12px', color: signatureCoords ? 'green' : 'red' }}>
-              {signatureCoords 
-                ? `Punto seleccionado: (X: ${Math.round(signatureCoords.x)}, Y: ${Math.round(signatureCoords.y)})` 
-                : 'Haz clic en el área azul del documento para fijar el punto.'}
+            <p style={{ fontSize: '12px', color: normalizedCoords ? 'green' : 'red' }}>
+              {normalizedCoords 
+                ? `Punto fijado: (${Math.round(normalizedCoords.percentX * 100)}% horizontal, ${Math.round(normalizedCoords.percentY * 100)}% vertical)` 
+                : 'Haz clic sobre el documento para fijar el punto.'}
             </p>
 
             <div style={{ marginTop: '15px', display: 'flex', justifyContent: 'flex-end', gap: '10px' }}>
               <button onClick={() => setSelectedDoc(null)}>Cancelar</button>
               <button 
                 onClick={() => handleSignDocument(selectedDoc)} 
-                disabled={loading || !signatureCoords}
-                style={{ background: signatureCoords ? '#16a34a' : '#ccc', color: '#fff', border: 'none', padding: '6px 12px', borderRadius: '4px' }}
+                disabled={loading || !normalizedCoords}
+                style={{ background: normalizedCoords ? '#16a34a' : '#ccc', color: '#fff', border: 'none', padding: '6px 12px', borderRadius: '4px' }}
               >
-                {loading ? 'Procesando...' : 'Estampar Firma Aquí'}
+                {loading ? 'Procesando...' : 'Estampar Firma'}
               </button>
             </div>
           </div>
