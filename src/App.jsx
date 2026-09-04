@@ -3,7 +3,6 @@ import { supabase } from './supabaseClient';
 import { PDFDocument, rgb, StandardFonts } from 'pdf-lib';
 
 export default function App() {
-  // Estados de la aplicación
   const [documents, setDocuments] = useState([]);
   const [selectedDoc, setSelectedDoc] = useState(null);
   const [selectedFile, setSelectedFile] = useState(null);
@@ -18,13 +17,15 @@ export default function App() {
   const [role, setRole] = useState('Auditor SGSI');
   const [isRegistering, setIsRegistering] = useState(false);
 
+  // Estado para la aprobación final
+  const [isFinalApproval, setIsFinalApproval] = useState(false);
+
   // Coordenadas interactivas
   const [normalizedCoords, setNormalizedCoords] = useState(null);
   const [clickPos, setClickPos] = useState(null);
 
   const previewRef = useRef(null);
 
-  // Escuchar la sesión de Supabase Auth
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
       setSession(session);
@@ -42,7 +43,6 @@ export default function App() {
     return () => subscription.unsubscribe();
   }, []);
 
-  // Consultar el perfil del usuario activo
   const fetchUserProfile = async (userId) => {
     try {
       const { data, error } = await supabase
@@ -55,11 +55,10 @@ export default function App() {
         setUserProfile(data);
       }
     } catch (err) {
-      console.warn('Perfil no encontrado o no configurado aún.');
+      console.warn('Perfil no encontrado.');
     }
   };
 
-  // Consultar lista de documentos
   const fetchDocuments = async () => {
     try {
       const { data, error } = await supabase
@@ -72,51 +71,38 @@ export default function App() {
     }
   };
 
-  // Generar Hash Criptográfico SHA-256
   const generateSHA256 = async (arrayBuffer) => {
     const hashBuffer = await crypto.subtle.digest('SHA-256', arrayBuffer);
     const hashArray = Array.from(new Uint8Array(hashBuffer));
     return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
   };
 
-  // Login o Registro de Usuarios
   const handleAuth = async (e) => {
     e.preventDefault();
     setLoading(true);
 
     try {
       if (isRegistering) {
-        // 1. Crear usuario en Supabase Auth
-        const { data: authData, error: authError } = await supabase.auth.signUp({
-          email,
-          password
-        });
-
+        const { data: authData, error: authError } = await supabase.auth.signUp({ email, password });
         if (authError) throw authError;
 
         if (authData.user) {
-          // 2. Crear perfil asociado en la tabla profiles
-          const { error: profileError } = await supabase
-            .from('profiles')
-            .insert({
-              id: authData.user.id,
-              full_name: fullName,
-              email: email,
-              role: role
-            });
+          await supabase.from('profiles').insert({
+            id: authData.user.id,
+            full_name: fullName,
+            email: email,
+            role: role
+          });
 
-          if (profileError) console.warn('Aviso al guardar perfil:', profileError.message);
-
-          alert('¡Registro exitoso! Ya puedes iniciar sesión.');
+          alert('¡Registro exitoso!');
           setIsRegistering(false);
         }
       } else {
-        // Iniciar Sesión
         const { error } = await supabase.auth.signInWithPassword({ email, password });
         if (error) throw error;
       }
     } catch (err) {
-      alert('Error de autenticación: ' + err.message);
+      alert('Error: ' + err.message);
     } finally {
       setLoading(false);
     }
@@ -126,7 +112,6 @@ export default function App() {
     supabase.auth.signOut();
   };
 
-  // Capturar clic sobre la vista previa
   const handlePreviewClick = (e) => {
     if (!previewRef.current) return;
     
@@ -141,10 +126,9 @@ export default function App() {
     setNormalizedCoords({ percentX, percentY });
   };
 
-  // Subir archivo PDF inicial
   const handleFileUpload = async (e) => {
     e.preventDefault();
-    if (!selectedFile) return alert('Por favor selecciona un archivo PDF.');
+    if (!selectedFile) return alert('Selecciona un archivo PDF.');
     setLoading(true);
 
     try {
@@ -155,23 +139,19 @@ export default function App() {
         .from('documentos_prueba')
         .upload(fileName, selectedFile);
 
-      if (uploadError) throw new Error('Error en Storage: ' + uploadError.message);
+      if (uploadError) throw new Error(uploadError.message);
 
       const { data: publicUrlData } = supabase.storage
         .from('documentos_prueba')
         .getPublicUrl(fileName);
 
-      const { error: dbError } = await supabase
-        .from('document_tests')
-        .insert({
-          title: selectedFile.name,
-          file_path: publicUrlData.publicUrl,
-          status: 'PENDING'
-        });
+      await supabase.from('document_tests').insert({
+        title: selectedFile.name,
+        file_path: publicUrlData.publicUrl,
+        status: 'PENDING'
+      });
 
-      if (dbError) throw new Error('Error en BD: ' + dbError.message);
-
-      alert('¡Archivo subido con éxito!');
+      alert('¡Archivo subido!');
       setSelectedFile(null);
       e.target.reset();
       fetchDocuments();
@@ -182,17 +162,16 @@ export default function App() {
     }
   };
 
-  // Estampar Firma Digital con Datos Dinámicos del Usuario
-  const handleSignDocument = async (doc) => {
-    if (!session) {
-      alert('Debes iniciar sesión para poder firmar un documento.');
-      return;
-    }
+  // Validación de Perfil para la Aprobación Final
+  const isAuthorizedToApprove = () => {
+    if (!userProfile?.role) return false;
+    const r = userProfile.role.toLowerCase();
+    return r.includes('gerente') || r.includes('ciso') || r.includes('encargado sgsi') || r.includes('oficial');
+  };
 
-    if (!normalizedCoords) {
-      alert('Por favor haz clic sobre la vista previa para seleccionar la posición.');
-      return;
-    }
+  const handleSignDocument = async (doc) => {
+    if (!session) return alert('Debes iniciar sesión para firmar.');
+    if (!normalizedCoords) return alert('Selecciona la posición de la firma.');
 
     setLoading(true);
     try {
@@ -219,15 +198,14 @@ export default function App() {
 
       const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
 
-      // DATOS DINÁMICOSEXTRAÍDOS DE LA SESIÓN DE USUARIO
       const signerName = userProfile?.full_name || session.user.email;
       const signerRole = userProfile?.role || 'Firmante Registrado';
-      const signerEmail = session.user.email;
+
+      const stampType = isFinalApproval ? '[ APROBACIÓN FINAL OK - SGSI ]' : '[ FIRMA DIGITAL REVISIÓN ]';
 
       const stamp = `
-      [ FIRMA DIGITAL ISO 27001 ]
+      ${stampType}
       Firmante: ${signerName} (${signerRole})
-      Email: ${signerEmail}
       Fecha: ${new Date().toISOString().split('T')[0]} | IP: ${ip} | HASH: ${shortHash}
       `;
 
@@ -236,32 +214,36 @@ export default function App() {
         y: Math.max(10, targetY),
         size: 5.5,
         font,
-        color: rgb(0, 0.2, 0.6),
+        color: isFinalApproval ? rgb(0, 0.5, 0.1) : rgb(0, 0.2, 0.6),
         lineHeight: 7,
       });
 
       const signedPdfBytes = await pdfDoc.save();
-      const signedFileName = `SIGNED_${Date.now()}.pdf`;
+      const signedFileName = `SIGNED_${doc.id}_${Date.now()}.pdf`;
 
       const { error: uploadError } = await supabase.storage
         .from('documentos_prueba')
         .upload(signedFileName, signedPdfBytes, { contentType: 'application/pdf' });
 
-      if (uploadError) throw new Error('Error al guardar firma: ' + uploadError.message);
+      if (uploadError) throw new Error(uploadError.message);
 
       const { data: finalUrlData } = supabase.storage
         .from('documentos_prueba')
         .getPublicUrl(signedFileName);
 
+      // Determinar el nuevo estado
+      const nextStatus = isFinalApproval ? 'APPROVED' : 'IN_REVIEW';
+
       await supabase
         .from('document_tests')
-        .update({ status: 'APPROVED', file_path: finalUrlData.publicUrl })
+        .update({ status: nextStatus, file_path: finalUrlData.publicUrl })
         .eq('id', doc.id);
 
-      alert(`¡Documento firmado exitosamente por ${signerName}!`);
+      alert(isFinalApproval ? '¡Documento validado con OK Final y cerrado!' : '¡Firma de revisión agregada!');
       setSelectedDoc(null);
       setNormalizedCoords(null);
       setClickPos(null);
+      setIsFinalApproval(false);
       fetchDocuments();
     } catch (err) {
       alert('Error en firma: ' + err.message);
@@ -272,14 +254,14 @@ export default function App() {
 
   return (
     <div style={{ fontFamily: 'Arial, sans-serif', padding: '30px', maxWidth: '800px', margin: '0 auto' }}>
-      <h2>Módulo de Firma Digital ISO con Autenticación</h2>
+      <h2>Módulo de Firma Digital & Aprobación SGSI</h2>
       
-      {/* BARRA DE SESIÓN Y USUARIO */}
+      {/* BARRA DE SESIÓN */}
       <div style={{ background: '#eef2ff', padding: '15px', borderRadius: '8px', marginBottom: '20px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         {session ? (
           <div>
             <strong>Usuario Activo:</strong> {userProfile?.full_name || session.user.email} <br />
-            <small style={{ color: '#555' }}>Cargo: {userProfile?.role || 'Firmante'} | Email: {session.user.email}</small>
+            <small style={{ color: '#555' }}>Cargo: {userProfile?.role || 'Sin Rol'} | Email: {session.user.email}</small>
           </div>
         ) : (
           <div><strong>Estado:</strong> No autenticado. Inicia sesión para firmar.</div>
@@ -292,47 +274,19 @@ export default function App() {
         )}
       </div>
 
-      {/* FORMULARIO DE INICIO DE SESIÓN / REGISTRO */}
+      {/* FORMULARIO DE LOGIN */}
       {!session && (
         <section style={{ background: '#f8fafc', border: '1px solid #e2e8f0', padding: '20px', borderRadius: '8px', marginBottom: '30px' }}>
-          <h3>{isRegistering ? 'Crear Perfil de Firmante' : 'Iniciar Sesión'}</h3>
+          <h3>{isRegistering ? 'Crear Perfil' : 'Iniciar Sesión'}</h3>
           <form onSubmit={handleAuth} style={{ display: 'flex', flexDirection: 'column', gap: '10px', maxWidth: '400px' }}>
             {isRegistering && (
               <>
-                <input
-                  type="text"
-                  placeholder="Nombre Completo"
-                  value={fullName}
-                  onChange={(e) => setFullName(e.target.value)}
-                  required
-                  style={{ padding: '8px' }}
-                />
-                <input
-                  type="text"
-                  placeholder="Cargo / Rol SGSI"
-                  value={role}
-                  onChange={(e) => setRole(e.target.value)}
-                  required
-                  style={{ padding: '8px' }}
-                />
+                <input type="text" placeholder="Nombre Completo" value={fullName} onChange={(e) => setFullName(e.target.value)} required style={{ padding: '8px' }} />
+                <input type="text" placeholder="Cargo (ej: Gerente General, Encargado SGSI)" value={role} onChange={(e) => setRole(e.target.value)} required style={{ padding: '8px' }} />
               </>
             )}
-            <input
-              type="email"
-              placeholder="Correo electrónico"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              required
-              style={{ padding: '8px' }}
-            />
-            <input
-              type="password"
-              placeholder="Contraseña"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              required
-              style={{ padding: '8px' }}
-            />
+            <input type="email" placeholder="Correo electrónico" value={email} onChange={(e) => setEmail(e.target.value)} required style={{ padding: '8px' }} />
+            <input type="password" placeholder="Contraseña" value={password} onChange={(e) => setPassword(e.target.value)} required style={{ padding: '8px' }} />
             <div style={{ display: 'flex', gap: '10px', marginTop: '10px' }}>
               <button type="submit" disabled={loading} style={{ padding: '8px 16px', background: '#2563eb', color: '#fff', border: 'none', borderRadius: '4px', cursor: 'pointer' }}>
                 {loading ? 'Procesando...' : (isRegistering ? 'Registrarse' : 'Ingresar')}
@@ -371,35 +325,33 @@ export default function App() {
             </tr>
           </thead>
           <tbody>
-            {documents.length === 0 ? (
-              <tr><td colSpan="4">No hay documentos registrados.</td></tr>
-            ) : (
-              documents.map((doc) => (
-                <tr key={doc.id}>
-                  <td>#{doc.id}</td>
-                  <td>{doc.title}</td>
-                  <td>
-                    <strong style={{ color: doc.status === 'APPROVED' ? 'green' : 'orange' }}>
-                      {doc.status}
-                    </strong>
-                  </td>
-                  <td>
-                    {doc.status === 'PENDING' ? (
-                      <button 
-                        onClick={() => { setSelectedDoc(doc); setClickPos(null); setNormalizedCoords(null); }}
-                        style={{ padding: '4px 8px', background: '#22c55e', color: '#fff', border: 'none', borderRadius: '4px', cursor: 'pointer' }}
-                      >
-                        Ubicar & Firmar
-                      </button>
-                    ) : (
-                      <a href={doc.file_path} target="_blank" rel="noreferrer" style={{ color: '#0070f3' }}>
-                        Ver Firmado
-                      </a>
-                    )}
-                  </td>
-                </tr>
-              ))
-            )}
+            {documents.map((doc) => (
+              <tr key={doc.id}>
+                <td>#{doc.id}</td>
+                <td>{doc.title}</td>
+                <td>
+                  <strong style={{ 
+                    color: doc.status === 'APPROVED' ? 'green' : (doc.status === 'IN_REVIEW' ? 'blue' : 'orange') 
+                  }}>
+                    {doc.status}
+                  </strong>
+                </td>
+                <td>
+                  {doc.status !== 'APPROVED' ? (
+                    <button 
+                      onClick={() => { setSelectedDoc(doc); setClickPos(null); setNormalizedCoords(null); setIsFinalApproval(false); }}
+                      style={{ padding: '4px 8px', background: '#22c55e', color: '#fff', border: 'none', borderRadius: '4px', cursor: 'pointer' }}
+                    >
+                      {doc.status === 'IN_REVIEW' ? 'Agregar Firma' : 'Ubicar & Firmar'}
+                    </button>
+                  ) : (
+                    <a href={doc.file_path} target="_blank" rel="noreferrer" style={{ color: '#0070f3' }}>
+                      Ver Documento Final
+                    </a>
+                  )}
+                </td>
+              </tr>
+            ))}
           </tbody>
         </table>
       </section>
@@ -408,57 +360,41 @@ export default function App() {
       {selectedDoc && (
         <div style={{ position: 'fixed', top: 0, left: 0, width: '100%', height: '100%', background: 'rgba(0,0,0,0.6)', display: 'flex', justifyContent: 'center', alignItems: 'center' }}>
           <div style={{ background: '#fff', padding: '20px', borderRadius: '8px', width: '420px' }}>
-            <h3>Haz clic dentro del recuadro de firma</h3>
+            <h3>Haz clic en el recuadro para estampar tu firma</h3>
             
             <div 
               ref={previewRef}
               onClick={handlePreviewClick}
-              style={{ 
-                position: 'relative', 
-                width: '100%', 
-                aspectRatio: '1 / 1.294', 
-                border: '2px dashed #0070f3', 
-                cursor: 'crosshair', 
-                overflow: 'hidden' 
-              }}
+              style={{ position: 'relative', width: '100%', aspectRatio: '1 / 1.294', border: '2px dashed #0070f3', cursor: 'crosshair', overflow: 'hidden' }}
             >
-              <iframe 
-                src={`${selectedDoc.file_path}#toolbar=0&navpanes=0&view=FitH`} 
-                width="100%" 
-                height="100%" 
-                title="PDF Preview" 
-                style={{ pointerEvents: 'none', border: 'none' }}
-              />
-
+              <iframe src={`${selectedDoc.file_path}#toolbar=0&navpanes=0&view=FitH`} width="100%" height="100%" title="PDF Preview" style={{ pointerEvents: 'none', border: 'none' }} />
               {clickPos && (
-                <div style={{
-                  position: 'absolute',
-                  left: `${clickPos.x}px`,
-                  top: `${clickPos.y}px`,
-                  width: '10px',
-                  height: '10px',
-                  backgroundColor: 'red',
-                  borderRadius: '50%',
-                  transform: 'translate(-50%, -50%)',
-                  boxShadow: '0 0 5px rgba(0,0,0,0.5)'
-                }} />
+                <div style={{ position: 'absolute', left: `${clickPos.x}px`, top: `${clickPos.y}px`, width: '10px', height: '10px', backgroundColor: 'red', borderRadius: '50%', transform: 'translate(-50%, -50%)' }} />
               )}
             </div>
 
-            <p style={{ fontSize: '12px', color: normalizedCoords ? 'green' : 'red', marginTop: '10px' }}>
-              {normalizedCoords 
-                ? `Punto fijado: (${Math.round(normalizedCoords.percentX * 100)}% H, ${Math.round(normalizedCoords.percentY * 100)}% V)` 
-                : 'Haz clic sobre el documento para fijar el punto.'}
-            </p>
+            {/* OPCIÓN DE OK FINAL PARA CARGOS AUTORIZADOS */}
+            {isAuthorizedToApprove() && (
+              <div style={{ marginTop: '12px', background: '#f0fdf4', border: '1px solid #bbf7d0', padding: '10px', borderRadius: '6px' }}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', fontSize: '13px', color: '#166534', fontWeight: 'bold' }}>
+                  <input 
+                    type="checkbox" 
+                    checked={isFinalApproval} 
+                    onChange={(e) => setIsFinalApproval(e.target.checked)} 
+                  />
+                  Dar OK Final y Cerrar Aprobación SGSI (Estado: APPROVED)
+                </label>
+              </div>
+            )}
 
             <div style={{ marginTop: '15px', display: 'flex', justifyContent: 'flex-end', gap: '10px' }}>
-              <button onClick={() => setSelectedDoc(null)} style={{ padding: '6px 12px' }}>Cancelar</button>
+              <button onClick={() => setSelectedDoc(null)}>Cancelar</button>
               <button 
                 onClick={() => handleSignDocument(selectedDoc)} 
                 disabled={loading || !normalizedCoords || !session}
-                style={{ background: (normalizedCoords && session) ? '#16a34a' : '#ccc', color: '#fff', border: 'none', padding: '6px 12px', borderRadius: '4px', cursor: 'pointer' }}
+                style={{ background: (normalizedCoords && session) ? (isFinalApproval ? '#15803d' : '#16a34a') : '#ccc', color: '#fff', border: 'none', padding: '6px 12px', borderRadius: '4px', cursor: 'pointer' }}
               >
-                {loading ? 'Procesando...' : (session ? 'Estampar Firma' : 'Inicia Sesión para Firmar')}
+                {loading ? 'Procesando...' : (isFinalApproval ? 'Dar OK Final y Estampar' : 'Estampar Firma')}
               </button>
             </div>
           </div>
