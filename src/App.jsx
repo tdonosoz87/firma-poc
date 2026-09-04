@@ -3,16 +3,63 @@ import { supabase } from './supabaseClient';
 import { PDFDocument, rgb, StandardFonts } from 'pdf-lib';
 
 export default function App() {
+  // Estados de la aplicación
   const [documents, setDocuments] = useState([]);
   const [selectedDoc, setSelectedDoc] = useState(null);
   const [selectedFile, setSelectedFile] = useState(null);
   const [loading, setLoading] = useState(false);
   
+  // Estados de Autenticación y Perfil
+  const [session, setSession] = useState(null);
+  const [userProfile, setUserProfile] = useState(null);
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [fullName, setFullName] = useState('');
+  const [role, setRole] = useState('Auditor SGSI');
+  const [isRegistering, setIsRegistering] = useState(false);
+
+  // Coordenadas interactivas
   const [normalizedCoords, setNormalizedCoords] = useState(null);
   const [clickPos, setClickPos] = useState(null);
 
   const previewRef = useRef(null);
 
+  // Escuchar la sesión de Supabase Auth
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      setSession(session);
+      if (session) fetchUserProfile(session.user.id);
+    });
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      setSession(session);
+      if (session) fetchUserProfile(session.user.id);
+      else setUserProfile(null);
+    });
+
+    fetchDocuments();
+
+    return () => subscription.unsubscribe();
+  }, []);
+
+  // Consultar el perfil del usuario activo
+  const fetchUserProfile = async (userId) => {
+    try {
+      const { data, error } = await supabase
+        .from('profiles')
+        .select('*')
+        .eq('id', userId)
+        .single();
+
+      if (!error && data) {
+        setUserProfile(data);
+      }
+    } catch (err) {
+      console.warn('Perfil no encontrado o no configurado aún.');
+    }
+  };
+
+  // Consultar lista de documentos
   const fetchDocuments = async () => {
     try {
       const { data, error } = await supabase
@@ -25,16 +72,61 @@ export default function App() {
     }
   };
 
-  useEffect(() => {
-    fetchDocuments();
-  }, []);
-
+  // Generar Hash Criptográfico SHA-256
   const generateSHA256 = async (arrayBuffer) => {
     const hashBuffer = await crypto.subtle.digest('SHA-256', arrayBuffer);
     const hashArray = Array.from(new Uint8Array(hashBuffer));
     return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
   };
 
+  // Login o Registro de Usuarios
+  const handleAuth = async (e) => {
+    e.preventDefault();
+    setLoading(true);
+
+    try {
+      if (isRegistering) {
+        // 1. Crear usuario en Supabase Auth
+        const { data: authData, error: authError } = await supabase.auth.signUp({
+          email,
+          password
+        });
+
+        if (authError) throw authError;
+
+        if (authData.user) {
+          // 2. Crear perfil asociado en la tabla profiles
+          const { error: profileError } = await supabase
+            .from('profiles')
+            .insert({
+              id: authData.user.id,
+              full_name: fullName,
+              email: email,
+              role: role
+            });
+
+          if (profileError) console.warn('Aviso al guardar perfil:', profileError.message);
+
+          alert('¡Registro exitoso! Ya puedes iniciar sesión.');
+          setIsRegistering(false);
+        }
+      } else {
+        // Iniciar Sesión
+        const { error } = await supabase.auth.signInWithPassword({ email, password });
+        if (error) throw error;
+      }
+    } catch (err) {
+      alert('Error de autenticación: ' + err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleLogout = () => {
+    supabase.auth.signOut();
+  };
+
+  // Capturar clic sobre la vista previa
   const handlePreviewClick = (e) => {
     if (!previewRef.current) return;
     
@@ -49,6 +141,7 @@ export default function App() {
     setNormalizedCoords({ percentX, percentY });
   };
 
+  // Subir archivo PDF inicial
   const handleFileUpload = async (e) => {
     e.preventDefault();
     if (!selectedFile) return alert('Por favor selecciona un archivo PDF.');
@@ -89,7 +182,13 @@ export default function App() {
     }
   };
 
+  // Estampar Firma Digital con Datos Dinámicos del Usuario
   const handleSignDocument = async (doc) => {
+    if (!session) {
+      alert('Debes iniciar sesión para poder firmar un documento.');
+      return;
+    }
+
     if (!normalizedCoords) {
       alert('Por favor haz clic sobre la vista previa para seleccionar la posición.');
       return;
@@ -115,16 +214,20 @@ export default function App() {
       
       const { width: pdfWidth, height: pdfHeight } = firstPage.getSize();
 
-      // Ajustamos targetY para compensar la altura del bloque compacto (3 líneas = ~21pt)
       const targetX = normalizedCoords.percentX * pdfWidth;
       const targetY = pdfHeight - (normalizedCoords.percentY * pdfHeight) + 10;
 
       const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
 
-      // Formato ultracompacto en 3 líneas
+      // DATOS DINÁMICOSEXTRAÍDOS DE LA SESIÓN DE USUARIO
+      const signerName = userProfile?.full_name || session.user.email;
+      const signerRole = userProfile?.role || 'Firmante Registrado';
+      const signerEmail = session.user.email;
+
       const stamp = `
       [ FIRMA DIGITAL ISO 27001 ]
-      Firmante: Supervisor SGSI (supervisor@empresa.cl)
+      Firmante: ${signerName} (${signerRole})
+      Email: ${signerEmail}
       Fecha: ${new Date().toISOString().split('T')[0]} | IP: ${ip} | HASH: ${shortHash}
       `;
 
@@ -155,7 +258,7 @@ export default function App() {
         .update({ status: 'APPROVED', file_path: finalUrlData.publicUrl })
         .eq('id', doc.id);
 
-      alert('¡Documento firmado en el recuadro exacto!');
+      alert(`¡Documento firmado exitosamente por ${signerName}!`);
       setSelectedDoc(null);
       setNormalizedCoords(null);
       setClickPos(null);
@@ -169,11 +272,82 @@ export default function App() {
 
   return (
     <div style={{ fontFamily: 'Arial, sans-serif', padding: '30px', maxWidth: '800px', margin: '0 auto' }}>
-      <h2>Módulo de Firma Digital Adaptativa ISO</h2>
-      <p style={{ color: '#666' }}>Sello compacto ajustado al recuadro con Hash SHA-256.</p>
+      <h2>Módulo de Firma Digital ISO con Autenticación</h2>
+      
+      {/* BARRA DE SESIÓN Y USUARIO */}
+      <div style={{ background: '#eef2ff', padding: '15px', borderRadius: '8px', marginBottom: '20px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        {session ? (
+          <div>
+            <strong>Usuario Activo:</strong> {userProfile?.full_name || session.user.email} <br />
+            <small style={{ color: '#555' }}>Cargo: {userProfile?.role || 'Firmante'} | Email: {session.user.email}</small>
+          </div>
+        ) : (
+          <div><strong>Estado:</strong> No autenticado. Inicia sesión para firmar.</div>
+        )}
+
+        {session && (
+          <button onClick={handleLogout} style={{ padding: '6px 12px', background: '#ef4444', color: '#fff', border: 'none', borderRadius: '4px', cursor: 'pointer' }}>
+            Cerrar Sesión
+          </button>
+        )}
+      </div>
+
+      {/* FORMULARIO DE INICIO DE SESIÓN / REGISTRO */}
+      {!session && (
+        <section style={{ background: '#f8fafc', border: '1px solid #e2e8f0', padding: '20px', borderRadius: '8px', marginBottom: '30px' }}>
+          <h3>{isRegistering ? 'Crear Perfil de Firmante' : 'Iniciar Sesión'}</h3>
+          <form onSubmit={handleAuth} style={{ display: 'flex', flexDirection: 'column', gap: '10px', maxWidth: '400px' }}>
+            {isRegistering && (
+              <>
+                <input
+                  type="text"
+                  placeholder="Nombre Completo"
+                  value={fullName}
+                  onChange={(e) => setFullName(e.target.value)}
+                  required
+                  style={{ padding: '8px' }}
+                />
+                <input
+                  type="text"
+                  placeholder="Cargo / Rol SGSI"
+                  value={role}
+                  onChange={(e) => setRole(e.target.value)}
+                  required
+                  style={{ padding: '8px' }}
+                />
+              </>
+            )}
+            <input
+              type="email"
+              placeholder="Correo electrónico"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              required
+              style={{ padding: '8px' }}
+            />
+            <input
+              type="password"
+              placeholder="Contraseña"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              required
+              style={{ padding: '8px' }}
+            />
+            <div style={{ display: 'flex', gap: '10px', marginTop: '10px' }}>
+              <button type="submit" disabled={loading} style={{ padding: '8px 16px', background: '#2563eb', color: '#fff', border: 'none', borderRadius: '4px', cursor: 'pointer' }}>
+                {loading ? 'Procesando...' : (isRegistering ? 'Registrarse' : 'Ingresar')}
+              </button>
+              <button type="button" onClick={() => setIsRegistering(!isRegistering)} style={{ background: 'none', border: 'none', color: '#2563eb', cursor: 'pointer', textDecoration: 'underline' }}>
+                {isRegistering ? '¿Ya tienes cuenta? Inicia sesión' : '¿No tienes cuenta? Regístrate'}
+              </button>
+            </div>
+          </form>
+        </section>
+      )}
 
       <hr style={{ margin: '20px 0' }} />
 
+      {/* SUBIDA DE ARCHIVO */}
       <section style={{ background: '#f4f4f4', padding: '20px', borderRadius: '8px', marginBottom: '30px' }}>
         <h3>1. Subir documento PDF para prueba</h3>
         <form onSubmit={handleFileUpload} style={{ display: 'flex', gap: '10px' }}>
@@ -184,6 +358,7 @@ export default function App() {
         </form>
       </section>
 
+      {/* LISTA DE SEGUIMIENTO */}
       <section>
         <h3>2. Seguimiento y Firma de Documentos</h3>
         <table border="1" cellPadding="8" cellSpacing="0" style={{ width: '100%', borderCollapse: 'collapse' }}>
@@ -229,6 +404,7 @@ export default function App() {
         </table>
       </section>
 
+      {/* MODAL DE FIRMA INTERACTIVA */}
       {selectedDoc && (
         <div style={{ position: 'fixed', top: 0, left: 0, width: '100%', height: '100%', background: 'rgba(0,0,0,0.6)', display: 'flex', justifyContent: 'center', alignItems: 'center' }}>
           <div style={{ background: '#fff', padding: '20px', borderRadius: '8px', width: '420px' }}>
@@ -279,10 +455,10 @@ export default function App() {
               <button onClick={() => setSelectedDoc(null)} style={{ padding: '6px 12px' }}>Cancelar</button>
               <button 
                 onClick={() => handleSignDocument(selectedDoc)} 
-                disabled={loading || !normalizedCoords}
-                style={{ background: normalizedCoords ? '#16a34a' : '#ccc', color: '#fff', border: 'none', padding: '6px 12px', borderRadius: '4px', cursor: 'pointer' }}
+                disabled={loading || !normalizedCoords || !session}
+                style={{ background: (normalizedCoords && session) ? '#16a34a' : '#ccc', color: '#fff', border: 'none', padding: '6px 12px', borderRadius: '4px', cursor: 'pointer' }}
               >
-                {loading ? 'Procesando...' : 'Estampar Firma'}
+                {loading ? 'Procesando...' : (session ? 'Estampar Firma' : 'Inicia Sesión para Firmar')}
               </button>
             </div>
           </div>
