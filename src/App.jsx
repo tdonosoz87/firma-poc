@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { supabase } from './supabaseClient'; // Importa las credenciales desde supabaseClient.js
+import { supabase } from './supabaseClient';
 import { PDFDocument, rgb, StandardFonts } from 'pdf-lib';
 import { FileCheck, Upload, CheckCircle2, Clock, Eye, FileText } from 'lucide-react';
 
@@ -31,7 +31,7 @@ export default function App() {
     fetchDocuments();
   }, []);
 
-  // 1. Cargar cualquier archivo PDF local a Supabase Storage
+  // 1. Cargar archivo PDF local con mensaje de diagnóstico
   const handleFileUpload = async (e) => {
     e.preventDefault();
     if (!selectedFile) {
@@ -42,6 +42,9 @@ export default function App() {
     setLoading(true);
 
     try {
+      // Obtener la URL del proyecto configurado para diagnóstico
+      const targetUrl = supabase.supabaseUrl || 'URL no detectada';
+
       const cleanFileName = selectedFile.name.replace(/[^a-zA-Z0-9.]/g, '_');
       const fileExt = cleanFileName.split('.').pop();
       
@@ -53,7 +56,7 @@ export default function App() {
 
       const fileName = `${Date.now()}_${cleanFileName}`;
 
-      // Subir archivo al bucket 'documentos_prueba'
+      // Intento de subida al bucket 'documentos_prueba'
       const { data: uploadData, error: uploadError } = await supabase.storage
         .from('documentos_prueba')
         .upload(fileName, selectedFile, {
@@ -62,7 +65,8 @@ export default function App() {
         });
 
       if (uploadError) {
-        throw new Error('Error en Storage: ' + uploadError.message);
+        // Muestra la URL del proyecto objetivo en el mensaje de error
+        throw new Error(`[Proyecto Supabase: ${targetUrl}]\nError en Storage: ${uploadError.message}`);
       }
 
       // Obtener URL Pública del archivo
@@ -102,14 +106,12 @@ export default function App() {
         const ipData = await ipRes.json();
         ip = ipData.ip;
       } catch (e) {
-        console.warn('No se pudo obtener IP pública, usando IP por defecto.');
+        console.warn('No se pudo obtener IP pública.');
       }
 
-      // Descargar el PDF original cargado
       const existingPdfBytes = await fetch(doc.file_path).then((res) => res.arrayBuffer());
       const pdfDoc = await PDFDocument.load(existingPdfBytes);
 
-      // Estampar el Recuadro de Firma ISO en la primera página
       const pages = pdfDoc.getPages();
       const firstPage = pages[0];
       const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
@@ -133,11 +135,9 @@ export default function App() {
         lineHeight: 9,
       });
 
-      // Guardar el PDF con la firma integrada
       const signedPdfBytes = await pdfDoc.save();
       const signedFileName = `SIGNED_${Date.now()}.pdf`;
 
-      // Subir el archivo firmado al bucket 'documentos_prueba'
       const { error: uploadError } = await supabase.storage
         .from('documentos_prueba')
         .upload(signedFileName, signedPdfBytes, { contentType: 'application/pdf' });
@@ -148,7 +148,6 @@ export default function App() {
         .from('documentos_prueba')
         .getPublicUrl(signedFileName);
 
-      // Actualizar registro en la Base de Datos
       await supabase
         .from('document_tests')
         .update({
